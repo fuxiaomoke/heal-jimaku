@@ -232,15 +232,23 @@ class HealJimakuApp(QMainWindow):
             # 加载固定背景
             fixed_path = self.background_settings.get('fixed_background_path', '')
             if fixed_path:
-                # 使用指定的固定背景图片
-                self.original_background = self.background_manager.load_specific_background_pixmap(fixed_path)
-                if self.original_background:
-                    bg_filename = os.path.basename(fixed_path)
-                    self._early_log(f"已加载固定背景图片: {bg_filename}")
+                # 检查文件是否存在
+                if os.path.exists(fixed_path):
+                    # 使用指定的固定背景图片
+                    self.original_background = self.background_manager.load_specific_background_pixmap(fixed_path)
+                    if self.original_background:
+                        bg_filename = os.path.basename(fixed_path)
+                        self._early_log(f"已加载固定背景图片: {bg_filename}")
+                    else:
+                        self._early_log(f"固定背景图片损坏或格式不支持: {fixed_path}，使用默认背景")
+                        # 回退到默认background.png并重置配置
+                        self._load_default_background()
+                        self._reset_background_settings_to_default()
                 else:
-                    self._early_log(f"固定背景图片加载失败: {fixed_path}，使用默认背景")
-                    # 回退到默认background.png
+                    self._early_log(f"固定背景图片不存在: {fixed_path}，使用默认背景")
+                    # 回退到默认background.png并重置配置
                     self._load_default_background()
+                    self._reset_background_settings_to_default()
             else:
                 # 使用默认background.png
                 self._load_default_background()
@@ -290,6 +298,28 @@ class HealJimakuApp(QMainWindow):
             self._early_log("已加载默认背景图片 background.png")
         else:
             self._early_log("警告: 默认背景图片 background.png 未找到。")
+
+    def _reset_background_settings_to_default(self):
+        """重置背景设置为默认值（当固定背景图片丢失时）"""
+        try:
+            # 重置背景设置为默认值
+            self.background_settings = {
+                'enable_random': DEFAULT_ENABLE_RANDOM_BACKGROUND,
+                'custom_folder': DEFAULT_CUSTOM_BACKGROUND_FOLDER,
+                'fixed_background_path': DEFAULT_FIXED_BACKGROUND_PATH
+            }
+
+            # 更新配置
+            self.config[USER_ENABLE_RANDOM_BACKGROUND_KEY] = DEFAULT_ENABLE_RANDOM_BACKGROUND
+            self.config[USER_CUSTOM_BACKGROUND_FOLDER_KEY] = DEFAULT_CUSTOM_BACKGROUND_FOLDER
+            self.config[USER_FIXED_BACKGROUND_PATH_KEY] = DEFAULT_FIXED_BACKGROUND_PATH
+
+            # 保存配置到文件
+            self._save_config()
+
+            self._early_log("已自动重置背景设置为默认值（因为固定背景图片丢失）")
+        except Exception as e:
+            self._early_log(f"重置背景设置时出错: {e}")
 
     def refresh_background(self):
         """刷新背景图片（用于用户更改背景设置后）"""

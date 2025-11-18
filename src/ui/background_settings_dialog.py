@@ -23,6 +23,8 @@ from config import (
     DEFAULT_REMEMBERED_CUSTOM_IMAGE, DEFAULT_BACKGROUND_SOURCE
 )
 from utils.file_utils import resource_path
+import shutil
+import sys
 
 
 class BackgroundSettingsDialog(QDialog):
@@ -36,6 +38,12 @@ class BackgroundSettingsDialog(QDialog):
         self.setModal(True)
         self.current_settings = current_settings
         self.background_manager = background_manager
+
+        # 创建用户数据目录用于保存固定背景图片
+        self.user_data_dir = self._get_user_data_dir()
+        self.fixed_backgrounds_dir = os.path.join(self.user_data_dir, "fixed_backgrounds")
+        if not os.path.exists(self.fixed_backgrounds_dir):
+            os.makedirs(self.fixed_backgrounds_dir, exist_ok=True)
 
         # 设置无边框窗口和半透明背景
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -361,6 +369,94 @@ class BackgroundSettingsDialog(QDialog):
         """
         self.setStyleSheet(style)
 
+    def _get_user_data_dir(self) -> str:
+        """获取用户数据目录路径"""
+        home_dir = os.path.expanduser("~")
+        app_data_dir = os.path.join(home_dir, ".heal_jimaku")
+        if not os.path.exists(app_data_dir):
+            os.makedirs(app_data_dir, exist_ok=True)
+        return app_data_dir
+
+    def _is_temp_path(self, path: str) -> bool:
+        """检查路径是否为临时路径（PyInstaller的_MEIPASS）"""
+        try:
+            # 检查是否在PyInstaller的临时目录中
+            meipass_base = sys._MEIPASS  # type: ignore
+            return os.path.commonpath([path, meipass_base]) == meipass_base
+        except AttributeError:
+            # 开发环境下不是临时路径
+            return False
+
+    def _copy_temp_background_to_permanent(self, temp_path: str) -> str:
+        """
+        将临时背景图片复制到永久位置
+
+        Args:
+            temp_path: 临时路径
+
+        Returns:
+            str: 永久保存的路径
+        """
+        if not temp_path or not os.path.exists(temp_path):
+            return temp_path
+
+        # 如果不是临时路径，直接返回原路径
+        if not self._is_temp_path(temp_path):
+            return temp_path
+
+        # 生成唯一的文件名，避免冲突
+        original_name = os.path.basename(temp_path)
+        name, ext = os.path.splitext(original_name)
+        timestamp = str(int(os.path.getmtime(temp_path)))
+        unique_name = f"{name}_{timestamp}{ext}"
+        permanent_path = os.path.join(self.fixed_backgrounds_dir, unique_name)
+
+        try:
+            # 复制文件到永久位置
+            shutil.copy2(temp_path, permanent_path)
+            return permanent_path
+        except Exception as e:
+            print(f"警告：无法复制临时背景图片到永久位置: {e}")
+            # 如果复制失败，返回原路径
+            return temp_path
+
+    def _cleanup_permanent_backgrounds(self, new_fixed_path: str = ""):
+        """
+        清理永久背景文件夹中不再使用的图片
+
+        Args:
+            new_fixed_path: 新的固定背景路径（如果有），不会被清理
+        """
+        try:
+            if not os.path.exists(self.fixed_backgrounds_dir):
+                return
+
+            # 获取当前设置中的固定背景路径
+            current_fixed_path = self.current_settings.get(USER_FIXED_BACKGROUND_PATH_KEY, "")
+
+            # 遍历永久文件夹中的所有文件
+            for filename in os.listdir(self.fixed_backgrounds_dir):
+                file_path = os.path.join(self.fixed_backgrounds_dir, filename)
+                if os.path.isfile(file_path):
+                    # 如果这个文件不是当前使用的固定背景，也不是即将使用的固定背景，则删除
+                    if file_path != current_fixed_path and file_path != new_fixed_path:
+                        try:
+                            os.remove(file_path)
+                            print(f"已清理不再使用的固定背景图片: {filename}")
+                        except Exception as e:
+                            print(f"清理背景图片失败 {filename}: {e}")
+        except Exception as e:
+            print(f"清理永久背景文件夹时出错: {e}")
+
+    def _is_permanent_background(self, path: str) -> bool:
+        """检查路径是否为永久背景文件夹中的文件"""
+        if not path:
+            return False
+        try:
+            return os.path.commonpath([path, self.fixed_backgrounds_dir]) == self.fixed_backgrounds_dir
+        except ValueError:
+            return False
+
     def _initialize_ui_state(self):
         """根据当前设置初始化UI状态"""
         enable_random = self.current_settings.get(USER_ENABLE_RANDOM_BACKGROUND_KEY, DEFAULT_ENABLE_RANDOM_BACKGROUND)
@@ -539,7 +635,9 @@ class BackgroundSettingsDialog(QDialog):
 
         # 根据选择的模式确定设置
         if self.default_random_radio.isChecked():
-            # 默认轮播 - 不设置固定背景路径
+            # 默认轮播 - 不设置固定背景路径，并清理永久背景图片
+            self._cleanup_permanent_backgrounds()
+
             background_settings = {
                 USER_ENABLE_RANDOM_BACKGROUND_KEY: True,
                 USER_CUSTOM_BACKGROUND_FOLDER_KEY: "",  # 默认模式不使用自定义文件夹
@@ -565,6 +663,11 @@ class BackgroundSettingsDialog(QDialog):
             fixed_background_path = ""
             if self.background_manager and self.background_manager.last_background_path:
                 fixed_background_path = self.background_manager.last_background_path
+                # 检查并处理临时路径
+                fixed_background_path = self._copy_temp_background_to_permanent(fixed_background_path)
+
+            # 清理不再使用的永久背景图片，但保留当前选择的图片
+            self._cleanup_permanent_backgrounds(fixed_background_path)
 
             background_settings = {
                 USER_ENABLE_RANDOM_BACKGROUND_KEY: False,
@@ -604,6 +707,9 @@ class BackgroundSettingsDialog(QDialog):
                 QMessageBox.warning(self, "文件夹无效", f"选择的文件夹无效：\n{error_message}")
                 return
 
+            # 自定义轮播模式 - 清理永久背景图片
+            self._cleanup_permanent_backgrounds()
+
             # 验证通过，创建设置
             background_settings = {
                 USER_ENABLE_RANDOM_BACKGROUND_KEY: True,
@@ -640,6 +746,9 @@ class BackgroundSettingsDialog(QDialog):
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "加载失败", f"无法加载图片文件：\n{custom_image_path}")
                 return
+
+            # 自定义固定模式 - 清理不再使用的永久背景图片，但保留当前选择的图片（如果它是永久图片）
+            self._cleanup_permanent_backgrounds(custom_image_path)
 
             # 验证通过，创建设置
             background_settings = {
