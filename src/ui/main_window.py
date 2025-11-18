@@ -1452,6 +1452,28 @@ class HealJimakuApp(QMainWindow):
             if CURRENT_PROFILE_ID_KEY not in self.config:
                 self.config[CURRENT_PROFILE_ID_KEY] = DEFAULT_CURRENT_PROFILE_ID
                 print(f"[DEBUG] 设置当前配置ID为默认值: {DEFAULT_CURRENT_PROFILE_ID}")
+            else:
+                print(f"[DEBUG] 当前配置ID: {self.config[CURRENT_PROFILE_ID_KEY]}")
+
+            # 确保配置列表中有默认配置
+            profiles = self.config.get(LLM_PROFILES_KEY, {}).get("profiles", [])
+            has_default_config = any(p.get("id") == DEFAULT_CURRENT_PROFILE_ID for p in profiles)
+            if not has_default_config:
+                print(f"[DEBUG] 配置列表中没有默认配置，创建默认配置")
+                default_profile = {
+                    "id": DEFAULT_CURRENT_PROFILE_ID,
+                    "name": "DeepSeek",
+                    "provider": app_config.PROVIDER_DEEPSEEK,
+                    "api_base_url": app_config.DEFAULT_LLM_API_BASE_URL,
+                    "model_name": app_config.DEFAULT_LLM_MODEL_NAME,
+                    "api_key": "",
+                    "temperature": app_config.DEFAULT_LLM_TEMPERATURE,
+                    "is_default": True,
+                    "custom_headers": {}
+                }
+                profiles.append(default_profile)
+                self.config[LLM_PROFILES_KEY] = {"profiles": profiles}
+                print(f"[DEBUG] 已创建默认配置: {DEFAULT_CURRENT_PROFILE_ID}")
 
             # 使用简化的LLM配置系统，显示当前配置的API Key（默认配置=当前配置）
             if self.api_key_entry:
@@ -2206,24 +2228,33 @@ class HealJimakuApp(QMainWindow):
 
         # 获取当前LLM配置（使用新的多配置系统）
         current_profile = app_config.get_current_llm_profile(self.config)
+        print(f"[DEBUG] 开始转换时的当前配置: {current_profile}")
 
         current_ui_api_key = self.api_key_entry.text().strip()
+        print(f"[DEBUG] UI中的API Key: {current_ui_api_key[:10] if current_ui_api_key else 'None'}")
+
         if current_ui_api_key:
             effective_api_key = current_ui_api_key
             # 同步API Key到当前配置
             self._sync_api_key_between_windows(from_main_to_advanced=True)
+            print(f"[DEBUG] 同步后的配置: {app_config.get_current_llm_profile(self.config)}")
 
-            # 根据复选框状态决定是否保存API Key到旧格式配置（向后兼容）
+            # 无论是否勾选记住API Key，都要将API Key保存到当前配置中（以便转换使用）
+            # 但是记住API Key控制的是程序重启后是否仍然保留
+            print(f"[DEBUG] 保存API Key到当前配置: {effective_api_key[:10]}...")
+            self._sync_api_key_to_current_profile(effective_api_key)
+
             if self.remember_api_key_checkbox.isChecked():
+                # 长期保存：保存到旧格式配置文件中
                 self.config[USER_LLM_API_KEY_KEY] = effective_api_key
                 self.config[USER_LLM_REMEMBER_API_KEY_KEY] = True
-                self.log_message("API Key 已保存到配置文件")
+                self.log_message("API Key 已保存到配置文件（长期记住）")
             else:
-                # 如果不记住，清除旧格式配置（但保留在新配置系统中）
+                # 临时保存：只保存在当前配置中，不保存到旧格式配置
                 if USER_LLM_API_KEY_KEY in self.config:
                     del self.config[USER_LLM_API_KEY_KEY]
                 self.config[USER_LLM_REMEMBER_API_KEY_KEY] = False
-                self.log_message("API Key 仅保存在当前配置中")
+                self.log_message("API Key 仅在本次会话中有效（不记住）")
         else:
             effective_api_key = current_profile.get("api_key", DEFAULT_LLM_API_KEY)
             # 如果主界面没有API Key，从配置同步到主界面
@@ -2261,8 +2292,14 @@ class HealJimakuApp(QMainWindow):
         # 配置SRT处理器
         self.srt_processor.configure_from_main_config(self.config)
 
-        # 保存配置
-        self.save_config()
+        # 确保API Key已经正确同步到配置
+        if current_ui_api_key:
+            print(f"[DEBUG] 转换前同步API Key: {current_ui_api_key[:10]}...")
+            self._sync_api_key_to_current_profile(current_ui_api_key)
+            # 立即保存配置以确保API Key被持久化
+            self.save_config()
+            print(f"[DEBUG] 配置已保存")
+
         self.progress_bar.setValue(0)
         self.log_message("--------------------")
         self.log_message("开始新的转换任务...")

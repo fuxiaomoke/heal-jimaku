@@ -664,8 +664,8 @@ def get_current_llm_profile(config: dict) -> dict:
 
     # 创建默认配置
     return {
-        "id": "default",
-        "name": "Default",
+        "id": DEFAULT_CURRENT_PROFILE_ID,
+        "name": "DeepSeek",
         "provider": PROVIDER_DEEPSEEK,
         "api_base_url": DEFAULT_LLM_API_BASE_URL,
         "model_name": DEFAULT_LLM_MODEL_NAME,
