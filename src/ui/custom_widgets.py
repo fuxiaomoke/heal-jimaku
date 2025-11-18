@@ -1,7 +1,9 @@
 from typing import Optional
+import os
 from PyQt6.QtWidgets import QWidget, QLabel, QCheckBox, QHBoxLayout
 from PyQt6.QtGui import QPainter, QColor, QBrush, QLinearGradient, QFont
 from PyQt6.QtCore import Qt, pyqtSignal
+from utils.file_utils import resource_path
 
 # --- 自定义控件 ---
 class TransparentWidget(QWidget):
@@ -136,26 +138,58 @@ class StrokeCheckBoxWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        # 获取勾选图标的正确路径
+        checkmark_path = resource_path('checkmark.png')
+
+        # 根据图标是否存在设置不同的样式
+        if checkmark_path and os.path.exists(checkmark_path):
+            # 使用图片背景
+            checkbox_style = f"""
+                QCheckBox::indicator {{
+                    width: 18px;
+                    height: 18px;
+                    border: 2px solid #5c8a6f;
+                    border-radius: 4px;
+                    background-color: transparent;
+                }}
+                QCheckBox::indicator:checked {{
+                    background-image: url('{checkmark_path.replace(os.sep, '/')}');
+                    background-position: center;
+                    background-repeat: no-repeat;
+                    border-color: #5c8a6f;
+                }}
+                QCheckBox::indicator:hover {{
+                    border-color: #5c8a6f;
+                }}
+            """
+        else:
+            # 没有图标文件时使用CSS绘制的勾选标记
+            checkbox_style = """
+                QCheckBox::indicator {
+                    width: 18px;
+                    height: 18px;
+                    border: 2px solid #5c8a6f;
+                    border-radius: 4px;
+                    background-color: transparent;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #5c8a6f;
+                    border-color: #5c8a6f;
+                }
+                QCheckBox::indicator:checked::after {
+                    content: '✓';
+                    color: white;
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                QCheckBox::indicator:hover {
+                    border-color: #5c8a6f;
+                }
+            """
+
         # 复选框
         self.checkbox = QCheckBox()
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid #5c8a6f;
-                border-radius: 4px;
-                background-color: transparent;
-            }
-            QCheckBox::indicator:checked {
-                background-image: url(assets/checkmark.png);
-                background-position: center;
-                background-repeat: no-repeat;
-                border-color: #5c8a6f;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #5c8a6f;
-            }
-        """)
+        self.checkbox.setStyleSheet(checkbox_style)
 
         # 描边标签 - 直接传入字体大小和字体族
         self.label = CustomLabel(text)
