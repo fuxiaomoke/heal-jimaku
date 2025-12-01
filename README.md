@@ -276,5 +276,5 @@
 - 感谢 [DeepSeek](https://www.deepseek.com/) 提供的强大语言模型支持。
 - 感谢 [LINUX DO](https://linux.do/) 的佬友们提供的各种大模型公益API。
 - 感谢 [ElevenLabs](https://elevenlabs.io/) (当前"免费获取JSON"功能主要依赖其STT服务), [OpenAI (Whisper)](https://openai.com/research/whisper), [Deepgram](https://deepgram.com/), [AssemblyAI](https://www.assemblyai.com/), [Soniox](https://soniox.com/) 等提供的优质语音转录服务与模型。
-- 感谢 [小红书 hi lab](https://github.com/rednote-hilab)  开源的高质量OCR模型
+- 感谢 [小红书 hi lab](https://github.com/rednote-hilab)  开源的高质量OCR模型。
 - 感谢 [PyQt](https://riverbankcomputing.com/software/pyqt/intro) 开发团队。
