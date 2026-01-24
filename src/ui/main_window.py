@@ -1614,14 +1614,11 @@ class HealJimakuApp(QMainWindow):
             if self.config.get('remember_api_key') is not None:
                  self.config[USER_LLM_REMEMBER_API_KEY_KEY] = self.config['remember_api_key']
 
-            # 确保配置中正确设置了当前配置ID
-            if CURRENT_PROFILE_ID_KEY not in self.config:
-                self.config[CURRENT_PROFILE_ID_KEY] = DEFAULT_CURRENT_PROFILE_ID
-
-            # 确保配置列表中有默认配置
+            # 确保配置列表存在
             profiles = self.config.get(LLM_PROFILES_KEY, {}).get("profiles", [])
-            has_default_config = any(p.get("id") == DEFAULT_CURRENT_PROFILE_ID for p in profiles)
-            if not has_default_config:
+            
+            # 如果配置列表为空，创建默认的DeepSeek配置
+            if not profiles:
                 default_profile = {
                     "id": DEFAULT_CURRENT_PROFILE_ID,
                     "name": "DeepSeek",
@@ -1631,10 +1628,28 @@ class HealJimakuApp(QMainWindow):
                     "api_key": "",
                     "temperature": app_config.DEFAULT_LLM_TEMPERATURE,
                     "is_default": True,
-                    "custom_headers": {}
+                    "custom_headers": {},
+                    "api_format": app_config.API_FORMAT_OPENAI
                 }
                 profiles.append(default_profile)
                 self.config[LLM_PROFILES_KEY] = {"profiles": profiles}
+                self.config[CURRENT_PROFILE_ID_KEY] = DEFAULT_CURRENT_PROFILE_ID
+            else:
+                # 确保至少有一个配置被标记为默认
+                has_default = any(p.get("is_default", False) for p in profiles)
+                if not has_default and profiles:
+                    # 将第一个配置设为默认
+                    profiles[0]["is_default"] = True
+                    self.config[LLM_PROFILES_KEY] = {"profiles": profiles}
+                
+                # 确保当前配置ID存在且有效
+                current_profile_id = self.config.get(CURRENT_PROFILE_ID_KEY)
+                profile_ids = [p.get("id") for p in profiles]
+                
+                if not current_profile_id or current_profile_id not in profile_ids:
+                    # 如果当前配置ID无效，使用默认配置的ID
+                    default_profile = next((p for p in profiles if p.get("is_default", False)), profiles[0])
+                    self.config[CURRENT_PROFILE_ID_KEY] = default_profile.get("id")
 
             # 使用简化的LLM配置系统，显示当前配置的API Key（默认配置=当前配置）
             if self.api_key_entry:
@@ -2589,11 +2604,11 @@ class HealJimakuApp(QMainWindow):
 
         # 确保API Key已经正确同步到配置
         if current_ui_api_key:
-            print(f"[DEBUG] 转换前同步API Key: {current_ui_api_key[:10]}...")
+            self.log_message(f"同步API Key到当前配置...")
             self._sync_api_key_to_current_profile(current_ui_api_key)
             # 立即保存配置以确保API Key被持久化
             self.save_config()
-            print(f"[DEBUG] 配置已保存")
+            self.log_message("配置已保存")
 
         self.progress_bar.setValue(0)
         self.log_message("--------------------")
@@ -3276,10 +3291,19 @@ class HealJimakuApp(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
+        """应用程序关闭事件处理"""
         self.log_message("正在关闭应用程序...")
+        
+        # 停止转换任务
         if self.conversion_controller:
             self.log_message("尝试停止正在进行的转换任务...")
             self.conversion_controller.stop_task()
+
+        # 停止测试连接线程
+        if hasattr(self, 'test_connection_thread') and self.test_connection_thread:
+            if self.test_connection_thread.isRunning():
+                self.test_connection_thread.quit()
+                self.test_connection_thread.wait(1000)  # 等待最多1秒
 
         # 检查"记住API Key"复选框状态
         remember_api_key = False
@@ -3288,7 +3312,6 @@ class HealJimakuApp(QMainWindow):
 
         if not remember_api_key:
             # 用户不记住API Key，需要清除配置中的API Key
-            # 先清除内存中的配置
             self._clear_api_key_from_current_profile()
 
             # 暂时清空输入框，避免save_config()重新保存
@@ -3297,14 +3320,18 @@ class HealJimakuApp(QMainWindow):
                 temp_api_key = self.api_key_entry.text()
                 self.api_key_entry.setText("")
 
+        # 保存配置
         self.save_config()
 
-        # 如果用户不记住API Key，恢复输入框内容（用户可能还想看到）
+        # 如果用户不记住API Key，恢复输入框内容
         if not remember_api_key and hasattr(self, 'api_key_entry'):
             self.api_key_entry.setText(temp_api_key)
 
-        super().closeEvent(event)
-        QApplication.instance().quit()
+        # 接受关闭事件
+        event.accept()
+        
+        # 不要在这里调用 quit()，让 main.py 中的 app.exec() 自然退出
+        # QApplication.instance().quit()  # 移除这行，避免 COM 错误
 
     def _clear_api_key_from_current_profile(self):
         """清除当前默认配置中的API Key"""
@@ -3644,8 +3671,8 @@ class HealJimakuApp(QMainWindow):
                     api_key = profile.get("api_key", "")
                     profile_name = profile.get("name", f"配置{i}")
 
+                    # 静默跳过没有API地址或密钥的配置，不显示警告
                     if not api_url or not api_key:
-                        self._early_log(f"🔧 启动时跳过配置 '{profile_name}'：缺少API地址或密钥")
                         continue
 
                     # 获取模型列表（静默操作）
@@ -3663,12 +3690,11 @@ class HealJimakuApp(QMainWindow):
                         llm_advanced_settings_dialog.close()
 
                     except Exception as e:
-                        self._early_log(f"❌ 配置 '{profile_name}' 自动获取模型失败: {str(e)}")
-                        # 静默失败，不影响程序启动
+                        # 静默失败，不显示错误消息
                         pass
 
                 except Exception as e:
-                    self._early_log(f"❌ 配置 '{profile_name}' 处理失败: {str(e)}")
+                    # 静默失败，不显示错误消息
                     pass
 
             # 保存更新的配置（静默更新，不通知用户）

@@ -22,7 +22,16 @@ from mutagen import File as MutagenFile
 # 根据官方文档，STT端点为 /v1/speech-to-text
 ELEVENLABS_STT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
-DEFAULT_STT_MODEL_ID = "scribe_v1"  # 默认使用的转录模型ID
+DEFAULT_STT_MODEL_ID = "scribe_v2"  # 默认使用的转录模型ID（推荐 v2）
+DEFAULT_ELEVENLABS_WEB_MODEL = "scribe_v2"  # 免费版默认模型
+DEFAULT_ELEVENLABS_API_MODEL = "scribe_v2"  # 付费版默认模型
+
+# 可用模型列表 (value, display_text)
+ELEVENLABS_MODELS = [
+    ("scribe_v2", "scribe_v2 (推荐，更精准)"),
+    ("scribe_v1", "scribe_v1 (旧版本)")
+]
+
 DEFAULT_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -53,6 +62,61 @@ class ElevenLabsSTTClient:
            hasattr(self._signals.parent(), 'is_running'):
             return self._signals.parent().is_running
         return True
+    
+    def _convert_brackets(self, text: str) -> str:
+        """
+        将方括号转换为圆括号
+        [event] → (event)
+        
+        用于统一 v2 模型的音频事件格式，使其与 v1 保持一致
+        
+        Args:
+            text: 包含方括号的文本
+            
+        Returns:
+            转换后的文本，所有 [event] 变为 (event)
+        """
+        import re
+        return re.sub(r'\[([^\]]+)\]', r'(\1)', text)
+    
+    def _normalize_v2_audio_events(self, response_data: dict, model_id: str) -> dict:
+        """
+        将 v2 的音频事件格式 [event] 转换为 v1 格式 (event)
+        
+        这样可以保持与现有系统的兼容性，无需修改提示词和处理逻辑
+        
+        Args:
+            response_data: API 响应数据
+            model_id: 使用的模型ID
+            
+        Returns:
+            格式化后的响应数据
+        """
+        # 只对 v2 模型进行转换
+        if model_id != "scribe_v2":
+            return response_data
+        
+        try:
+            # 转换 text 字段
+            if "text" in response_data and isinstance(response_data["text"], str):
+                response_data["text"] = self._convert_brackets(response_data["text"])
+            
+            # 转换 words 数组中每个词的 text 字段
+            if "words" in response_data and isinstance(response_data["words"], list):
+                for word in response_data["words"]:
+                    if isinstance(word, dict) and "text" in word and isinstance(word["text"], str):
+                        word["text"] = self._convert_brackets(word["text"])
+            
+            # 标记已进行格式转换
+            if "elevenlabs_api_metadata" not in response_data:
+                response_data["elevenlabs_api_metadata"] = {}
+            response_data["elevenlabs_api_metadata"]["format_normalized"] = True
+            
+        except Exception as e:
+            self._log(f"警告: 格式转换失败: {e}，使用原始响应")
+            # 继续使用原始响应，不中断流程
+        
+        return response_data
 
     def stop_current_task(self):
         """
@@ -108,7 +172,8 @@ class ElevenLabsSTTClient:
                          audio_file_path: str,
                          language_code: Optional[str] = None, 
                          num_speakers: Optional[int] = None,
-                         tag_audio_events: bool = True) -> Optional[Dict]:
+                         tag_audio_events: bool = True,
+                         model_id: Optional[str] = None) -> Optional[Dict]:
         """
         Web免费版转录 (使用相同的API端点，但不带API Key)
         """
@@ -127,7 +192,8 @@ class ElevenLabsSTTClient:
                 api_key="", # 无Key
                 language_code=language_code,
                 num_speakers=num_speakers or 0,
-                tag_audio_events=tag_audio_events
+                tag_audio_events=tag_audio_events,
+                model_id=model_id  # 传递模型ID
             )
         except Exception as e:
             self._log(f"Web版转录失败: {e}")
@@ -137,12 +203,28 @@ class ElevenLabsSTTClient:
                                     language_code: Optional[str] = None,
                                     num_speakers: int = 0,
                                     enable_diarization: bool = True,
-                                    tag_audio_events: bool = True) -> Optional[Dict]:
+                                    tag_audio_events: bool = True,
+                                    model_id: Optional[str] = None) -> Optional[Dict]:
         """
         使用ElevenLabs官方API进行音频转录
+        
+        Args:
+            audio_file_path: 音频文件路径
+            api_key: API密钥（免费版传空字符串）
+            language_code: 语言代码
+            num_speakers: 说话人数量
+            enable_diarization: 是否启用说话人分离
+            tag_audio_events: 是否标记音频事件
+            model_id: 模型ID（scribe_v1 或 scribe_v2），默认使用 DEFAULT_STT_MODEL_ID
         """
         try:
             self._log("开始使用ElevenLabs官方API转录音频...")
+            
+            # 使用传入的模型ID或默认值
+            if model_id is None:
+                model_id = DEFAULT_STT_MODEL_ID
+            
+            self._log(f"使用模型: {model_id}")
 
             if not os.path.exists(audio_file_path):
                 self._log(f"错误: 音频文件未找到: {audio_file_path}")
@@ -164,7 +246,7 @@ class ElevenLabsSTTClient:
 
                 # 2. 付费版表单数据
                 payload_data = {
-                    "model_id": DEFAULT_STT_MODEL_ID,
+                    "model_id": model_id,  # 使用传入的模型ID
                     "timestamps_granularity": "word",  # 付费版可以使用
                     "tag_audio_events": tag_audio_events,
                     "diarize": enable_diarization
@@ -205,7 +287,7 @@ class ElevenLabsSTTClient:
 
                 # 3. 免费版表单数据 (绝对不包含timestamps_granularity)
                 payload_data = {
-                    "model_id": DEFAULT_STT_MODEL_ID,
+                    "model_id": model_id,  # 使用传入的模型ID
                     "tag_audio_events": tag_audio_events,  # 修复：使用bool值而不是字符串
                     "diarize": enable_diarization            # 修复：使用bool值而不是字符串
                 }
@@ -285,10 +367,14 @@ class ElevenLabsSTTClient:
 
             if response.status_code == 200:
                 result = response.json()
+                
+                # 格式转换：将 v2 的 [event] 转换为 (event)
+                result = self._normalize_v2_audio_events(result, model_id)
+                
                 # 注入元数据方便后续处理
                 result["elevenlabs_api_metadata"] = {
                     "api_type": "official",
-                    "model_id": DEFAULT_STT_MODEL_ID,
+                    "model_id": model_id,  # 记录使用的模型
                     "audio_duration": duration
                 }
                 self._log("ElevenLabs转录成功！")

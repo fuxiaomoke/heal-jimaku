@@ -241,7 +241,11 @@ class ConversionController(QObject):
             app_config.USER_LLM_API_KEY_KEY: current_profile.get("api_key", app_config.DEFAULT_LLM_API_KEY),
             app_config.USER_LLM_API_BASE_URL_KEY: api_base_url,
             app_config.USER_LLM_MODEL_NAME_KEY: current_profile.get("model_name", app_config.DEFAULT_LLM_MODEL_NAME),
-            app_config.USER_LLM_TEMPERATURE_KEY: current_profile.get("temperature", app_config.DEFAULT_LLM_TEMPERATURE)
+            app_config.USER_LLM_TEMPERATURE_KEY: current_profile.get("temperature", app_config.DEFAULT_LLM_TEMPERATURE),
+            # [FIX] 传递 API 格式，确保用户设置的格式生效
+            "api_format": current_profile.get("api_format", app_config.API_FORMAT_AUTO),
+            # [FIX] 传递自定义 Headers（如 Claude 的 anthropic-version）
+            "custom_headers": current_profile.get("custom_headers", {})
         }
 
         self.thread = QThread()

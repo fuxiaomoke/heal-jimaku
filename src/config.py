@@ -122,6 +122,16 @@ USER_SONIOX_CONTEXT_GENERAL_KEY = "user_soniox_context_general"
 # 云端转录默认值
 DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER = "elevenlabs_web"  # 默认使用免费版
 
+# ElevenLabs 模型配置
+DEFAULT_ELEVENLABS_WEB_MODEL = "scribe_v2"  # 免费版默认模型
+DEFAULT_ELEVENLABS_API_MODEL = "scribe_v2"  # 付费版默认模型
+
+# ElevenLabs 可用模型列表 (用于UI下拉框)
+ELEVENLABS_MODELS = [
+    ("scribe_v2", "scribe_v2 (推荐，更精准)"),
+    ("scribe_v1", "scribe_v1 (旧版本)")
+]
+
 # ElevenLabs API 默认值
 DEFAULT_ELEVENLABS_API_KEY = ""
 DEFAULT_ELEVENLABS_API_REMEMBER_KEY = True
@@ -889,37 +899,25 @@ def delete_llm_profile(config: dict, profile_id: str) -> dict:
     if len(profiles) <= 1:
         raise ValueError("不能删除最后一个配置")
 
+    # 检查要删除的配置是否是默认配置
+    deleted_profile = next((p for p in profiles if p.get("id") == profile_id), None)
+    deleted_is_default = deleted_profile and deleted_profile.get("is_default", False)
+
     # 删除指定配置
     profiles = [p for p in profiles if p.get("id") != profile_id]
 
-    # 检查删除的配置是否是默认配置
-    deleted_is_default = False
-    for profile in profiles:
-        if profile.get("id") == profile_id and profile.get("is_default", False):
-            deleted_is_default = True
-            break
+    # 如果删除的是默认配置，将第一个配置设为新的默认配置
+    if deleted_is_default and profiles:
+        profiles[0]["is_default"] = True
 
     # 如果删除的是当前配置，切换到默认配置
     current_profile_id = config.get(CURRENT_PROFILE_ID_KEY)
     if current_profile_id == profile_id:
         # 查找默认配置
-        for profile in profiles:
-            if profile.get("is_default", False):
-                config[CURRENT_PROFILE_ID_KEY] = profile.get("id")
-                break
-        else:
-            # 如果没有默认配置，使用第一个
-            config[CURRENT_PROFILE_ID_KEY] = profiles[0].get("id")
+        default_profile = next((p for p in profiles if p.get("is_default", False)), profiles[0])
+        config[CURRENT_PROFILE_ID_KEY] = default_profile.get("id")
 
     config[LLM_PROFILES_KEY] = {"profiles": profiles}
-
-    # 如果删除的是默认配置，将第一个配置设为新的默认配置
-    if deleted_is_default and profiles:
-        first_profile_id = profiles[0].get("id")
-        config = set_default_llm_profile(config, first_profile_id)
-        # 如果当前配置不存在，切换到新的默认配置
-        if not any(p.get("id") == config.get(CURRENT_PROFILE_ID_KEY) for p in profiles):
-            config[CURRENT_PROFILE_ID_KEY] = first_profile_id
 
     return config
 

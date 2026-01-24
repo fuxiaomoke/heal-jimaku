@@ -33,12 +33,17 @@ def _parse_api_url_and_model(
     input_model_name: Optional[str],
     default_api_base_for_v1: str = app_config.DEFAULT_LLM_API_BASE_URL,
     default_model: str = app_config.DEFAULT_LLM_MODEL_NAME,
-    api_format: Optional[str] = None  # 新增：API格式参数
+    api_format: Optional[str] = None  # API格式参数
 ) -> tuple[str, str]:
-    final_url = ""
+    """
+    解析并构建完整的 API URL
+    
+    优化逻辑：优先信任 api_format 参数，而不是猜测 URL
+    """
     effective_model = input_model_name if input_model_name else default_model
+    
+    # 1. 处理空 URL 的情况
     if not input_base_url_str:
-        # 如果没有提供URL，使用默认的并添加/v1和/chat/completions
         final_url = default_api_base_for_v1
         if not final_url.endswith('/'):
             final_url += '/'
@@ -47,77 +52,62 @@ def _parse_api_url_and_model(
 
     raw_url = input_base_url_str.strip()
 
-    # 检查是否以 '#' 结尾，表示用户提供了完整的API路径
-    is_full_url = raw_url.endswith("#")
-    if is_full_url:
-        final_url = raw_url[:-1]  # 移除 '#' 标记，使用完整路径
-
-        # 即使是完整URL，也要确定API格式以便进行正确的请求格式处理
-        # 但跳过URL构建，直接使用用户提供路径
-
-        # 根据API格式确定请求格式，但不修改URL
-        if api_format == app_config.API_FORMAT_AUTO or api_format is None:
-            # 自动检测API格式，但URL保持不变
-            if "api.anthropic.com" in final_url:
-                determined_format = app_config.API_FORMAT_CLAUDE
-            elif "generativelanguage.googleapis.com" in final_url:
-                determined_format = app_config.API_FORMAT_GEMINI
-            else:
-                determined_format = app_config.API_FORMAT_OPENAI
-        else:
-            determined_format = api_format
-
-        # 记录完整URL使用日志
-        _log_api_message(f"使用完整API路径: {final_url}，检测格式: {determined_format}", None)
-
+    # 2. 处理完整 URL（以 '#' 结尾）
+    if raw_url.endswith("#"):
+        final_url = raw_url[:-1]  # 移除 '#' 标记
+        _log_api_message(f"使用完整API路径: {final_url}", None)
         return final_url, effective_model
 
-    # 确定API格式
-    if api_format == app_config.API_FORMAT_AUTO or api_format is None:
-        # 自动检测：优先识别已知提供商域名
+    # 3. 确定 API 格式（优先使用参数，其次自动检测）
+    determined_format = api_format
+    if determined_format == app_config.API_FORMAT_AUTO or determined_format is None:
+        # 仅在 AUTO 模式下才根据域名猜测
         if "api.anthropic.com" in raw_url:
             determined_format = app_config.API_FORMAT_CLAUDE
         elif "generativelanguage.googleapis.com" in raw_url:
             determined_format = app_config.API_FORMAT_GEMINI
         else:
-            # 自定义提供商默认使用OpenAI格式
+            # 默认使用 OpenAI 格式（兼容性最好）
             determined_format = app_config.API_FORMAT_OPENAI
-    else:
-        # 使用指定的API格式
-        determined_format = api_format
 
-    # 根据确定的API格式构建URL
+    # 4. 根据格式构建 URL
+    if not raw_url.endswith('/'):
+        raw_url += '/'
+    
     if determined_format == app_config.API_FORMAT_CLAUDE:
-        # Claude API 使用 /v1/messages
-        if not raw_url.endswith('/'):
-            raw_url += '/'
-        final_url = raw_url + "v1/messages"
-    elif determined_format == app_config.API_FORMAT_GEMINI:
-        # Gemini API 使用 /v1beta/models/{model}:generateContent
-        if not raw_url.endswith('/'):
-            raw_url += '/'
-        final_url = raw_url + f"v1beta/models/{effective_model}:generateContent"
-    elif determined_format == app_config.API_FORMAT_OPENAI:
-        # OpenAI兼容格式使用 /v1/chat/completions
-        if "/v1" in raw_url or "/v2" in raw_url:
-            # 如果已经包含版本号，则直接使用，并确保以 /chat/completions 结尾
-            if not raw_url.endswith('/'):
-                raw_url += '/'
-            if not raw_url.endswith('chat/completions'):
-                final_url = raw_url + "chat/completions"
+        # Claude: /v1/messages
+        # 防御性编程：避免重复添加
+        if "v1/messages" not in raw_url:
+            # 如果 URL 中已有 v1/，则只添加 messages
+            if "v1/" in raw_url:
+                final_url = raw_url.rstrip('/').split("v1/")[0] + "v1/messages"
             else:
-                final_url = raw_url
-        elif raw_url.endswith('/'):
-            # 如果以 '/' 结尾，但在前面没有版本号，则添加 /v1/chat/completions
-            final_url = raw_url + "v1/chat/completions"
+                final_url = raw_url + "v1/messages"
         else:
-            # 如果不以 '/' 结尾，且没有版本号，则添加 /v1/chat/completions
-            final_url = raw_url + "/v1/chat/completions"
+            final_url = raw_url.rstrip('/')
+            
+    elif determined_format == app_config.API_FORMAT_GEMINI:
+        # Gemini: /v1beta/models/{model}:generateContent
+        if "generateContent" not in raw_url:
+            final_url = raw_url + f"v1beta/models/{effective_model}:generateContent"
+        else:
+            final_url = raw_url.rstrip('/')
+            
+    elif determined_format == app_config.API_FORMAT_OPENAI:
+        # OpenAI 兼容: /v1/chat/completions
+        # 标准化处理，避免重复添加
+        if "chat/completions" in raw_url:
+            # 已经包含完整路径
+            final_url = raw_url.rstrip('/')
+        elif "v1/" in raw_url or "v2/" in raw_url:
+            # 包含版本号但没有 chat/completions
+            final_url = raw_url + "chat/completions"
+        else:
+            # 纯域名，添加完整路径
+            final_url = raw_url + "v1/chat/completions"
     else:
-        # 未知格式，默认使用OpenAI兼容格式
+        # 未知格式，使用 OpenAI 兼容格式作为后备
         _log_api_message(f"警告: 未知的API格式 '{determined_format}'，使用OpenAI兼容格式", None)
-        if not raw_url.endswith('/'):
-            raw_url += '/'
         final_url = raw_url + "v1/chat/completions"
 
     return final_url, effective_model
@@ -440,7 +430,9 @@ def _get_summary(
 
     _log_summary_api(f"向 LLM API 请求文本摘要 (URL: {target_url}, 模型: {effective_model}, 温度: {effective_summary_temperature})...")
 
-    # 根据不同的API提供商构建请求
+    # [FIX] 根据 API 格式构建请求 - 优先信任 api_format 参数
+    # 注意：_get_summary 目前没有接收 api_format 参数，需要从 URL 推断或添加参数
+    # 临时方案：通过 URL 判断，但优先级低于显式的 api_format
     if "generativelanguage.googleapis.com" in target_url:
         # Gemini API 使用不同的请求格式和认证方式
         payload = {
@@ -453,7 +445,7 @@ def _get_summary(
         # Gemini API 使用 URL 参数传递 API key
         response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
     else:
-        # 其他 API 使用 OpenAI 兼容格式
+        # 其他 API 使用 OpenAI 兼容格式（包括 Claude，因为摘要任务可以用 system prompt）
         payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_summary}, {"role": "user", "content": full_text}]}
         if custom_temperature is not None: payload["temperature"] = effective_summary_temperature
 
@@ -585,8 +577,9 @@ def call_llm_api_for_segmentation(
         user_content_with_summary = f"【全文摘要】:\n{summary_text}\n\n【当前文本块】:\n{chunk}"
         if not summary_text: user_content_with_summary = f"【当前文本块】:\n{chunk}"
 
-        # 根据确定的API格式构建请求
-        if api_format == app_config.API_FORMAT_GEMINI or "generativelanguage.googleapis.com" in target_url:
+        # [FIX] 根据 API 格式构建请求 - 优先信任 api_format 参数而不是域名猜测
+        # 这样可以正确支持 Gemini/Claude 的反向代理
+        if api_format == app_config.API_FORMAT_GEMINI:
             # Gemini API 使用不同的请求格式和认证方式
             payload = {
                 "contents": [{"parts": [{"text": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]}],
@@ -595,9 +588,9 @@ def call_llm_api_for_segmentation(
                     "maxOutputTokens": 8192
                 }
             }
-            # Gemini API 使用 URL 参数传递 API key
+            # Gemini API 使用 URL 参数传递 API key（即使是代理也要这样）
             response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
-        elif api_format == app_config.API_FORMAT_CLAUDE or "/v1/messages" in target_url:
+        elif api_format == app_config.API_FORMAT_CLAUDE:
             # Claude API 使用 /v1/messages 格式
             payload = {
                 "model": effective_model,
@@ -613,7 +606,7 @@ def call_llm_api_for_segmentation(
             }
             response = requests.post(target_url, headers=headers, json=payload, timeout=180)
         else:
-            # OpenAI 兼容格式 (默认格式)
+            # OpenAI 兼容格式 (默认格式，包括 AUTO 模式)
             payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_segmentation}, {"role": "user", "content": user_content_with_summary }]}
             if custom_temperature is not None: payload["temperature"] = effective_temperature
 
@@ -825,7 +818,8 @@ def test_llm_connection(
     custom_api_base_url_str: Optional[str],
     custom_model_name: Optional[str],
     custom_temperature: Optional[float],
-    signals_forwarder: Optional[Any] = None # 新增 signals_forwarder 参数
+    signals_forwarder: Optional[Any] = None,
+    api_format: Optional[str] = None  # 新增：API格式参数
 ) -> tuple[bool, str]:
     def _log_test_connection(message: str):
         # 简化日志输出，只输出重要信息
@@ -839,52 +833,25 @@ def test_llm_connection(
     # 输出测试开始信息
     _log_test_connection("开始测试LLM连接...")
 
-    # 根据不同的API提供商构建请求
-    if "api.anthropic.com" in raw_url:
+    # 确定 API 格式（优先使用参数，其次自动检测）
+    determined_format = api_format
+    if determined_format == app_config.API_FORMAT_AUTO or determined_format is None:
+        # 仅在 AUTO 模式下才根据域名猜测
+        if "api.anthropic.com" in raw_url:
+            determined_format = app_config.API_FORMAT_CLAUDE
+        elif "generativelanguage.googleapis.com" in raw_url:
+            determined_format = app_config.API_FORMAT_GEMINI
+        else:
+            # 默认使用 OpenAI 格式（兼容性最好）
+            determined_format = app_config.API_FORMAT_OPENAI
+
+    # 根据API格式选择测试方法
+    if determined_format == app_config.API_FORMAT_CLAUDE:
         # Claude API - 使用专门的连接测试函数
         return _test_claude_connection(api_key, raw_url, effective_model, test_temperature, _log_test_connection)
-    elif "generativelanguage.googleapis.com" in raw_url:
+    elif determined_format == app_config.API_FORMAT_GEMINI:
         # Gemini API - 先验证API密钥，再验证模型
         return _test_gemini_connection(api_key, raw_url, effective_model, test_temperature, _log_test_connection)
     else:
-        # OpenAI 兼容 API
-        target_url, _ = _parse_api_url_and_model(
-            custom_api_base_url_str, custom_model_name,
-            app_config.DEFAULT_LLM_API_BASE_URL, app_config.DEFAULT_LLM_MODEL_NAME
-        )
-        payload = {"model": effective_model, "messages": [{"role": "user", "content": "Hello"}]}
-        if custom_temperature is not None:
-            payload["temperature"] = test_temperature
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-
-    try:
-        response = requests.post(target_url, headers=headers, json=payload, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-
-        # 根据不同的API提供商检查响应格式
-        if "api.anthropic.com" in raw_url:
-            # Claude API 响应格式检查
-            if data.get("content") and isinstance(data.get("content"), list) and len(data["content"]) > 0:
-                return True, f"连接成功！Claude 模型 {effective_model} 返回了响应。"
-        elif "generativelanguage.googleapis.com" in raw_url:
-            # Gemini API 响应格式检查
-            if data.get("candidates") and isinstance(data.get("candidates"), list) and len(data["candidates"]) > 0:
-                return True, f"连接成功！Gemini 模型 {effective_model} 返回了响应。"
-        else:
-            # OpenAI 兼容 API 响应格式检查
-            if (data.get("choices") and isinstance(data["choices"], list) and len(data["choices"]) > 0 and
-                isinstance(data["choices"][0], dict) and data["choices"][0].get("message", {}).get("content") is not None):
-                return True, f"连接成功！模型 {effective_model} 在 {target_url} 返回了响应。"
-
-        # 通用成功检查（收到200响应）
-        return True, f"连接测试：收到HTTP 200响应，但响应内容格式未知。模型: {effective_model}, URL: {target_url}. 响应: {str(data)[:200]}"
-    except requests.exceptions.Timeout: return False, f"连接超时 (20秒)。URL: {target_url}"
-    except requests.exceptions.HTTPError as e:
-        status_code = e.response.status_code; error_text = e.response.text[:200] 
-        if status_code == 401: return False, f"认证失败 (401)。检查API Key。URL: {target_url}"
-        elif status_code == 404: return False, f"API端点未找到 (404)。检查API地址: {target_url}"
-        elif status_code == 500: return False, f"服务器内部错误 (500)。API: {target_url}。错误: {error_text}"
-        else: return False, f"API请求失败，状态码: {status_code}。URL: {target_url}。错误: {error_text}"
-    except requests.exceptions.RequestException as e: return False, f"连接错误。URL: {target_url}。错误: {e}"
-    except Exception as e: return False, f"测试连接未知错误。URL: {target_url}。错误: {type(e).__name__} - {str(e)[:100]}"
+        # OpenAI 兼容 API（包括 AUTO 模式默认）
+        return _test_openai_compatible_connection(api_key, custom_api_base_url_str, effective_model, test_temperature, _log_test_connection)

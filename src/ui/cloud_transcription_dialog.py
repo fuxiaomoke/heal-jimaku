@@ -42,7 +42,12 @@ from config import (
     USER_LLM_MODEL_NAME_KEY,
     USER_LLM_TEMPERATURE_KEY
 )
-from core.elevenlabs_api import ElevenLabsSTTClient
+from core.elevenlabs_api import (
+    ElevenLabsSTTClient, 
+    ELEVENLABS_MODELS, 
+    DEFAULT_ELEVENLABS_WEB_MODEL, 
+    DEFAULT_ELEVENLABS_API_MODEL
+)
 from core.soniox_api import SonioxClient
 from core.llm_api import call_llm_api_for_segmentation
 
@@ -661,7 +666,7 @@ class CloudTranscriptionDialog(QDialog):
         # === 窗口尺寸配置 ===
         self.DIALOG_SIZES = {
             0: (900, 650),  # Web版
-            1: (900, 750),  # API版
+            1: (900, 800),  # API版（增加了模型选择行）
             2: (980, 850)   # Soniox版
         }
 
@@ -927,14 +932,32 @@ class CloudTranscriptionDialog(QDialog):
         layout.addWidget(lbl_spk, 1, 0)
         layout.addWidget(self.el_web_speakers_spin, 1, 1)
 
-        # Row 2: 开关 - 放在第1列，与上方控件对齐
+        # Row 2: 模型版本
+        lbl_model = CustomLabel("模型版本:")
+        lbl_model.setFont(label_font)
+        lbl_model.setCustomColors(self.param_label_main_color, self.param_label_stroke_color)
+        
+        self.el_web_model_combo = QComboBox()
+        for model_id, display_text in ELEVENLABS_MODELS:
+            self.el_web_model_combo.addItem(display_text, model_id)
+        self.el_web_model_combo.setStyleSheet(self._get_combo_style())
+        self.el_web_model_combo.setMinimumHeight(38)
+        self.el_web_model_combo.setToolTip(
+            "scribe_v2: 推荐使用，识别更精准，日语自动过滤音频事件\n"
+            "scribe_v1: 旧版本，包含更多音频事件标记，可能有误判"
+        )
+
+        layout.addWidget(lbl_model, 2, 0)
+        layout.addWidget(self.el_web_model_combo, 2, 1)
+
+        # Row 3: 开关 - 放在第1列，与上方控件对齐
         self.el_web_audio_events_check = StrokeCheckBoxWidget("标记音频事件 (如 [笑声])")
         # [默认设置] 默认不勾选音频事件
         self.el_web_audio_events_check.setChecked(False)
-        layout.addWidget(self.el_web_audio_events_check, 2, 1, 1, 2, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.el_web_audio_events_check, 3, 1, 1, 2, Qt.AlignmentFlag.AlignLeft)
 
         layout.setColumnStretch(1, 1)
-        layout.setRowStretch(3, 1)
+        layout.setRowStretch(4, 1)
 
         self.config_stack.addWidget(page)
 
@@ -1008,17 +1031,35 @@ class CloudTranscriptionDialog(QDialog):
         layout.addWidget(lbl_spk, 2, 2)
         layout.addWidget(self.el_api_speakers_spin, 2, 3)
 
-        # Row 3: 启用说话人分离 (单独一行)
+        # Row 3: 模型版本
+        lbl_model = CustomLabel("模型版本:")
+        lbl_model.setFont(label_font)
+        lbl_model.setCustomColors(self.param_label_main_color, self.param_label_stroke_color)
+        
+        self.el_api_model_combo = QComboBox()
+        for model_id, display_text in ELEVENLABS_MODELS:
+            self.el_api_model_combo.addItem(display_text, model_id)
+        self.el_api_model_combo.setStyleSheet(self._get_combo_style())
+        self.el_api_model_combo.setMinimumHeight(38)
+        self.el_api_model_combo.setToolTip(
+            "scribe_v2: 推荐使用，识别更精准，日语自动过滤音频事件\n"
+            "scribe_v1: 旧版本，包含更多音频事件标记，可能有误判"
+        )
+
+        layout.addWidget(lbl_model, 3, 0)
+        layout.addWidget(self.el_api_model_combo, 3, 1, 1, 3)
+
+        # Row 4: 启用说话人分离 (单独一行)
         self.el_api_diarization_check = StrokeCheckBoxWidget("启用说话人分离")
         # [默认设置] 默认不勾选说话人分离
         self.el_api_diarization_check.setChecked(False)
-        layout.addWidget(self.el_api_diarization_check, 3, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.el_api_diarization_check, 4, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
 
-        # Row 4: 标记音频事件 (单独一行)
+        # Row 5: 标记音频事件 (单独一行)
         self.el_api_audio_events_check = StrokeCheckBoxWidget("标记音频事件")
         # [默认设置] 默认不勾选音频事件
         self.el_api_audio_events_check.setChecked(False)
-        layout.addWidget(self.el_api_audio_events_check, 4, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.el_api_audio_events_check, 5, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
 
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
@@ -1647,6 +1688,22 @@ class CloudTranscriptionDialog(QDialog):
             self.el_api_diarization_check.setChecked(self.current_settings.get('elevenlabs_api_enable_diarization', False))
         if hasattr(self, 'el_api_audio_events_check'):
             self.el_api_audio_events_check.setChecked(self.current_settings.get('elevenlabs_api_tag_audio_events', False))
+        
+        # 加载付费版模型选择
+        if hasattr(self, 'el_api_model_combo'):
+            api_model = self.current_settings.get('elevenlabs_api_model', DEFAULT_ELEVENLABS_API_MODEL)
+            for i in range(self.el_api_model_combo.count()):
+                if self.el_api_model_combo.itemData(i) == api_model:
+                    self.el_api_model_combo.setCurrentIndex(i)
+                    break
+        
+        # 加载免费版模型选择
+        if hasattr(self, 'el_web_model_combo'):
+            web_model = self.current_settings.get('elevenlabs_web_model', DEFAULT_ELEVENLABS_WEB_MODEL)
+            for i in range(self.el_web_model_combo.count()):
+                if self.el_web_model_combo.itemData(i) == web_model:
+                    self.el_web_model_combo.setCurrentIndex(i)
+                    break
 
         # 2. 加载 Soniox API 配置
         if hasattr(self, 'soniox_api_key_edit'):
@@ -1789,7 +1846,8 @@ class CloudTranscriptionDialog(QDialog):
             settings.update({
                 'language': SUPPORTED_LANGUAGES[self.el_web_language_combo.currentIndex()][0], # 针对Web版的当前选择
                 'num_speakers': self.el_web_speakers_spin.value(),
-                'tag_audio_events': self.el_web_audio_events_check.isChecked()
+                'tag_audio_events': self.el_web_audio_events_check.isChecked(),
+                'elevenlabs_web_model': self.el_web_model_combo.currentData()  # 保存免费版模型选择
             })
             
         # 2. 收集 ElevenLabs API 数据
@@ -1819,7 +1877,8 @@ class CloudTranscriptionDialog(QDialog):
                 'elevenlabs_api_language': SUPPORTED_LANGUAGES[self.el_api_language_combo.currentIndex()][0],
                 'elevenlabs_api_num_speakers': self.el_api_speakers_spin.value(),
                 'elevenlabs_api_enable_diarization': self.el_api_diarization_check.isChecked(),
-                'elevenlabs_api_tag_audio_events': self.el_api_audio_events_check.isChecked()
+                'elevenlabs_api_tag_audio_events': self.el_api_audio_events_check.isChecked(),
+                'elevenlabs_api_model': self.el_api_model_combo.currentData()  # 保存付费版模型选择
             })
 
         # 3. 收集 Soniox API 数据

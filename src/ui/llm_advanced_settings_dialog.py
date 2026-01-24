@@ -22,12 +22,13 @@ class LlmTestWorker(QObject):
     finished = pyqtSignal(bool, str)
     log_message = pyqtSignal(str)  # 日志输出信号
 
-    def __init__(self, api_key: str, base_url: str, model_name: str, temperature: float):
+    def __init__(self, api_key: str, base_url: str, model_name: str, temperature: float, api_format: str = None):
         super().__init__()
         self._api_key = api_key
         self._base_url = base_url
         self._model_name = model_name
         self._temperature = temperature
+        self._api_format = api_format
 
     def run(self):
         """运行LLM连接测试"""
@@ -39,7 +40,8 @@ class LlmTestWorker(QObject):
                 custom_api_base_url_str=self._base_url,
                 custom_model_name=self._model_name,
                 custom_temperature=self._temperature,
-                signals_forwarder=self  # 传递自身作为信号转发器
+                signals_forwarder=self,  # 传递自身作为信号转发器
+                api_format=self._api_format  # 传递API格式参数
             )
             self.finished.emit(success, message)
         except Exception as e:
@@ -66,75 +68,28 @@ class ModelFetchWorker(QObject):
             self.finished.emit([], f"获取模型列表失败: {e}")
 
     def _fetch_models(self):
-        """获取模型列表"""
-        # 检查是否为官方API
+        """获取模型列表 - 根据 API 格式而不是域名判断"""
+        # [FIX] 将 UI 格式文本转换为内部格式常量
+        api_format_map = {
+            "OpenAI兼容": config.API_FORMAT_OPENAI,
+            "Claude格式": config.API_FORMAT_CLAUDE,
+            "Gemini格式": config.API_FORMAT_GEMINI,
+            "自动检测": config.API_FORMAT_AUTO
+        }
+        api_format = api_format_map.get(self._provider, config.API_FORMAT_AUTO)
+        
+        # 检查是否为官方API（用于决定是否尝试实时获取）
         official_domains = [
             "api.openai.com",
             "api.anthropic.com",
             "generativelanguage.googleapis.com",
             "api.deepseek.com"
         ]
-
         is_official_api = any(domain in self._api_base_url for domain in official_domains)
 
-        if is_official_api:
-            # 官方API：根据提供商返回已知模型列表
-            return self._get_official_models()
-        else:
-            # 第三方代理：尝试调用OpenAI兼容的/v1/models接口
-            try:
-                import requests
-                url = f"{self._api_base_url.rstrip('/')}/v1/models"
-                headers = {"Authorization": f"Bearer {self._api_key}"}
-                response = requests.get(url, headers=headers, timeout=15)
-
-                if response.status_code == 200:
-                    data = response.json()
-                    # 解析标准OpenAI格式
-                    if "data" in data and isinstance(data["data"], list):
-                        models = [model["id"] for model in data["data"] if isinstance(model, dict) and "id" in model]
-                        return models, f"成功获取模型列表，共{len(models)}个模型"
-            except requests.exceptions.Timeout:
-                pass  # 超时失败，使用通用模型列表
-            except requests.exceptions.ConnectionError:
-                pass  # 连接失败，使用通用模型列表
-            except Exception:
-                pass  # 其他异常，使用通用模型列表
-
-            # 备用方案：返回通用模型列表
-            models = [
-                "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini",
-                "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
-                "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
-                "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307",
-                "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro",
-                "deepseek-chat", "deepseek-coder"
-            ]
-            return models, "API调用失败，使用通用模型列表"
-
-    def _get_official_models(self):
-        """获取官方API的模型列表"""
-        if "api.openai.com" in self._api_base_url:
-            # OpenAI: 使用实时API获取
-            try:
-                import requests
-                url = f"{self._api_base_url.rstrip('/')}/v1/models"
-                headers = {"Authorization": f"Bearer {self._api_key}"}
-                response = requests.get(url, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "data" in data and isinstance(data["data"], list):
-                        models = [model["id"] for model in data["data"] if isinstance(model, dict) and "id" in model]
-                        return models, f"成功获取OpenAI实时模型列表，共{len(models)}个模型"
-                # 如果API调用失败，返回静态列表
-                models = ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
-                return models, "API调用失败，使用OpenAI默认模型列表"
-            except Exception as e:
-                models = ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
-                return models, f"API调用异常，使用OpenAI默认模型列表: {str(e)}"
-
-        elif "api.anthropic.com" in self._api_base_url:
-            # Claude: 使用静态列表
+        # 根据 API 格式决定如何获取模型
+        if api_format == config.API_FORMAT_CLAUDE or "api.anthropic.com" in self._api_base_url:
+            # Claude: 使用静态列表（Claude API 不提供模型列表接口）
             models = [
                 "claude-opus-4-1-20250805",
                 "claude-sonnet-4-5-20250929",
@@ -144,65 +99,57 @@ class ModelFetchWorker(QObject):
                 "claude-2.1", "claude-2.0", "claude-instant-1.2"
             ]
             return models, "使用Claude已知模型列表"
-
-        elif "generativelanguage.googleapis.com" in self._api_base_url:
-            # Google: 使用实时API获取
+            
+        elif api_format == config.API_FORMAT_GEMINI or "generativelanguage.googleapis.com" in self._api_base_url:
+            # Gemini: 尝试实时获取
             try:
                 import requests
-                # Google API需要将API key作为查询参数
                 url = f"{self._api_base_url.rstrip('/')}/v1beta/models?key={self._api_key}"
                 response = requests.get(url, timeout=15)
                 if response.status_code == 200:
                     data = response.json()
                     if "models" in data and isinstance(data["models"], list):
-                        models = [model["name"] for model in data["models"] if isinstance(model, dict) and "name" in model]
-                        # 提取模型名称，去掉前缀
-                        models = [model.split("/")[-1] for model in models]
-                        return models, f"成功获取Google实时模型列表，共{len(models)}个模型"
-                # 如果API调用失败，返回静态列表
-                models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro", "gemini-pro-vision"]
-                return models, "API调用失败，使用Google默认模型列表"
-            except Exception as e:
-                models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro", "gemini-pro-vision"]
-                return models, f"API调用异常，使用Google默认模型列表: {str(e)}"
-
-        elif "api.deepseek.com" in self._api_base_url:
-            # DeepSeek: 使用实时API获取 (同OpenAI标准)
+                        models = [model["name"].split("/")[-1] for model in data["models"] if "name" in model]
+                        return models, f"成功获取Gemini实时模型列表，共{len(models)}个模型"
+            except Exception:
+                pass
+            # 失败时返回静态列表
+            models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro", "gemini-pro-vision"]
+            return models, "API调用失败，使用Gemini默认模型列表"
+            
+        else:
+            # OpenAI 兼容格式（包括 AUTO 模式）：尝试调用 /v1/models
             try:
                 import requests
                 url = f"{self._api_base_url.rstrip('/')}/v1/models"
                 headers = {"Authorization": f"Bearer {self._api_key}"}
                 response = requests.get(url, headers=headers, timeout=15)
+
                 if response.status_code == 200:
                     data = response.json()
                     if "data" in data and isinstance(data["data"], list):
                         models = [model["id"] for model in data["data"] if isinstance(model, dict) and "id" in model]
-                        return models, f"成功获取DeepSeek实时模型列表，共{len(models)}个模型"
-                # 如果API调用失败，返回静态列表
+                        return models, f"成功获取模型列表，共{len(models)}个模型"
+            except Exception:
+                pass
+
+            # 失败时根据域名返回对应的静态列表
+            if "api.openai.com" in self._api_base_url:
+                models = ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+                return models, "API调用失败，使用OpenAI默认模型列表"
+            elif "api.deepseek.com" in self._api_base_url:
                 models = ["deepseek-chat", "deepseek-coder"]
                 return models, "API调用失败，使用DeepSeek默认模型列表"
-            except Exception as e:
-                models = ["deepseek-chat", "deepseek-coder"]
-                return models, f"API调用异常，使用DeepSeek默认模型列表: {str(e)}"
-
-        else:
-            # 未知官方API，尝试使用通用接口
-            try:
-                import requests
-                url = f"{self._api_base_url.rstrip('/')}/v1/models"
-                headers = {"Authorization": f"Bearer {self._api_key}"}
-                response = requests.get(url, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "data" in data and isinstance(data["data"], list):
-                        models = [model["id"] for model in data["data"] if isinstance(model, dict) and "id" in model]
-                        return models, f"成功获取未知API实时模型列表，共{len(models)}个模型"
-            except Exception:
-                pass  # API调用失败，使用通用模型列表
-
-            # 回退到通用模型列表
-            models = ["gpt-4", "gpt-3.5-turbo", "claude-3-sonnet-20240229", "gemini-pro", "deepseek-chat"]
-            return models, "使用通用模型列表"
+            else:
+                # 通用模型列表（适用于第三方代理）
+                models = [
+                    "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini",
+                    "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
+                    "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
+                    "gemini-1.5-pro", "gemini-1.5-flash",
+                    "deepseek-chat", "deepseek-coder"
+                ]
+                return models, "API调用失败，使用通用模型列表"
 
 
 class LlmAdvancedSettingsDialog(QDialog):
@@ -490,14 +437,14 @@ class LlmAdvancedSettingsDialog(QDialog):
         self.model_name_combo.setMinimumHeight(36)
         model_layout.addWidget(self.model_name_combo, 3)  # 3:1比例
 
-        fetch_button = QPushButton("获取模型")
-        fetch_button.setObjectName("fetchModelsButton")
-        fetch_button.clicked.connect(self._fetch_models)
-        fetch_button.setMinimumWidth(80)
-        fetch_button.setMinimumHeight(42)
-        fetch_button.setFixedHeight(42)
-        fetch_button.setStyleSheet("margin-top: 3px;")  # 向下偏移3px
-        model_layout.addWidget(fetch_button, 1)
+        self.fetch_models_button = QPushButton("获取模型")
+        self.fetch_models_button.setObjectName("fetchModelsButton")
+        self.fetch_models_button.clicked.connect(self._fetch_models)
+        self.fetch_models_button.setMinimumWidth(80)
+        self.fetch_models_button.setMinimumHeight(42)
+        self.fetch_models_button.setFixedHeight(42)
+        self.fetch_models_button.setStyleSheet("margin-top: 3px;")  # 向下偏移3px
+        model_layout.addWidget(self.fetch_models_button, 1)
 
         model_label = CustomLabel("模型:")
         model_label.setFont(QFont('楷体', 14, QFont.Weight.Bold))
@@ -1293,7 +1240,7 @@ class LlmAdvancedSettingsDialog(QDialog):
         return False
 
     def _set_default_profile(self):
-        """设置当前配置为默认"""
+        """设置当前配置为默认（即当前使用的配置）"""
         current_item = self.profile_list.currentItem()
         if not current_item:
             return
@@ -1340,10 +1287,10 @@ class LlmAdvancedSettingsDialog(QDialog):
                     self.profiles[i]["api_key"] = ""
                     break
 
-        # 设置为默认（简化设计：这同时改变当前使用的配置）
+        # 设置为默认配置（当前配置 = 默认配置）
         self.config = config.set_default_llm_profile(self.config, profile_id)
 
-        # 在简化设计中，同时更新当前活跃配置ID
+        # 同时更新当前活跃配置ID（统一概念：当前配置就是默认配置）
         self.config[config.CURRENT_PROFILE_ID_KEY] = profile_id
 
         # 发射信号保存配置到文件
@@ -1360,15 +1307,15 @@ class LlmAdvancedSettingsDialog(QDialog):
                 self._on_profile_selected(item, None)
                 break
 
-        # 显示成功提示
-        QMessageBox.information(self, "设置成功", f"已将「{profile_name}」设为当前使用的配置")
+        # 显示成功提示（统一概念）
+        QMessageBox.information(self, "设置成功", f"已将「{profile_name}」设为默认配置（当前使用）")
 
         # 输出日志到主界面
         if self.parent_window and hasattr(self.parent_window, 'log_message'):
             if should_remember_api_key:
-                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认LLM配置")
+                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认配置")
             else:
-                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认LLM配置（已清除旧配置的API Key）")
+                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认配置（已清除旧配置的API Key）")
 
     def _generate_unique_name(self, name_prefix: str) -> str:
         """生成唯一的配置名称，避免重名"""
@@ -1504,9 +1451,16 @@ class LlmAdvancedSettingsDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先填写API地址和API Key")
             return
 
-        # 创建工作线程 - 直接传递API地址和密钥，让ModelFetchWorker自动判断类型
+        # 获取当前选择的 API 格式，传递给 Worker
+        api_format_text = self.api_format_combo.currentText()
+        
+        # 禁用获取按钮，显示获取中状态
+        self.fetch_models_button.setEnabled(False)
+        self.fetch_models_button.setText("⏳ 获取中...")
+        
+        # 创建工作线程 - 传递 API 格式文本
         self.fetch_thread = QThread()
-        self.fetch_worker = ModelFetchWorker(api_base_url, api_key, "")
+        self.fetch_worker = ModelFetchWorker(api_base_url, api_key, api_format_text)
         self.fetch_worker.moveToThread(self.fetch_thread)
 
         # 连接信号
@@ -1546,10 +1500,15 @@ class LlmAdvancedSettingsDialog(QDialog):
         """处理获取到的模型列表"""
         try:
             # 停止超时定时器
-            if hasattr(self, 'fetch_timeout_timer'):
+            if hasattr(self, 'fetch_timeout_timer') and self.fetch_timeout_timer:
                 self.fetch_timeout_timer.stop()
                 self.fetch_timeout_timer.deleteLater()
                 self.fetch_timeout_timer = None
+            
+            # 恢复获取按钮状态
+            self.fetch_models_button.setEnabled(True)
+            self.fetch_models_button.setText("获取模型")
+            
             if models:
                 # 清空当前模型列表
                 self.model_name_combo.clear()
@@ -1593,6 +1552,16 @@ class LlmAdvancedSettingsDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先填写完整的配置信息")
             return
 
+        # 获取当前选择的API格式
+        api_format_text = self.api_format_combo.currentText()
+        api_format_map = {
+            "自动检测": config.API_FORMAT_AUTO,
+            "OpenAI兼容": config.API_FORMAT_OPENAI,
+            "Claude格式": config.API_FORMAT_CLAUDE,
+            "Gemini格式": config.API_FORMAT_GEMINI
+        }
+        api_format = api_format_map.get(api_format_text, config.API_FORMAT_AUTO)
+
         # 检查模型列表是否为空（排除Claude，因为Claude是静态模型）
         current_item = self.profile_list.currentItem()
         if current_item:
@@ -1601,9 +1570,8 @@ class LlmAdvancedSettingsDialog(QDialog):
             current_profile = next((p for p in profiles if p.get("id") == profile_id), None)
             if current_profile:
                 available_models = current_profile.get("available_models", [])
-                provider = current_profile.get("provider", "")
-                # 如果模型列表为空且不是Claude，则提示用户先获取模型
-                if not available_models and provider != "Claude (Anthropic)":
+                # 如果模型列表为空且不是Claude格式，则提示用户先获取模型
+                if not available_models and api_format != config.API_FORMAT_CLAUDE:
                     QMessageBox.warning(self, "提示", "当前模型列表为空，请先点击「获取模型」按钮获取最新的模型列表")
                     return
 
@@ -1615,9 +1583,9 @@ class LlmAdvancedSettingsDialog(QDialog):
         if self.parent_window and hasattr(self.parent_window, 'log_message'):
             self.parent_window.log_message("开始测试LLM连接...")
 
-        # 创建工作线程
+        # 创建工作线程 - 传递API格式参数
         self.test_thread = QThread()
-        self.test_worker = LlmTestWorker(api_key, api_base_url, model_name, temperature)
+        self.test_worker = LlmTestWorker(api_key, api_base_url, model_name, temperature, api_format)
         self.test_worker.moveToThread(self.test_thread)
 
         # 连接信号
@@ -1689,11 +1657,17 @@ class LlmAdvancedSettingsDialog(QDialog):
 
     def accept(self):
         """保存并关闭对话框"""
-        # 保存当前配置
-        self._save_current_profile()
+        # 保存当前正在编辑的配置
+        if not self._save_current_profile():
+            QMessageBox.warning(self, "保存失败", "无法保存当前配置，请检查配置信息是否完整")
+            return
 
-        # 发出信号
+        # 发出信号保存所有配置到文件
         self.settings_applied.emit(self.config)
+
+        # 输出日志到主界面
+        if self.parent_window and hasattr(self.parent_window, 'log_message'):
+            self.parent_window.log_message("✅ LLM配置已保存")
 
         # 关闭对话框
         super().accept()
@@ -1705,61 +1679,37 @@ class LlmAdvancedSettingsDialog(QDialog):
 
     def closeEvent(self, event):
         """窗口关闭事件"""
-        # 在关闭前同步UI中的修改到主窗口
-        self._sync_ui_changes_to_main_window()
+        # 清理线程
         self._cleanup_threads()
         super().closeEvent(event)
 
-    def _sync_ui_changes_to_main_window(self):
-        """在关闭窗口前同步UI中的修改到主窗口"""
+    def _sync_default_profile_to_main_window(self):
+        """同步默认配置到主窗口（仅在保存后调用）"""
         if not self.parent_window or not hasattr(self.parent_window, 'api_key_entry'):
             return
 
-        # 获取当前选中的配置
-        current_item = self.profile_list.currentItem()
-        if not current_item:
-            return
-
-        profile_id = current_item.data(Qt.ItemDataRole.UserRole)
-        if not profile_id:
-            return
-
-        # 查找原始配置
-        original_profile = None
+        # 查找默认配置
+        default_profile = None
         for profile in self.profiles:
-            if profile["id"] == profile_id:
-                original_profile = profile
+            if profile.get("is_default", False):
+                default_profile = profile
                 break
 
-        if not original_profile:
+        if not default_profile:
             return
 
-        # 检查是否有修改
-        current_api_key = self.api_key_edit.text().strip()
-        original_api_key = original_profile.get("api_key", "")
+        # 同步默认配置的API Key到主界面
+        default_api_key = default_profile.get("api_key", "")
+        self.parent_window.api_key_entry.setText(default_api_key)
 
-        # 只有当前配置是默认配置时才同步到主界面
-        if original_profile.get("is_default", False) and current_api_key != original_api_key:
-            # 直接更新主界面的API Key输入框
-            self.parent_window.api_key_entry.setText(current_api_key)
+        # 更新主界面的复选框状态
+        has_saved_key = bool(default_api_key)
+        if hasattr(self.parent_window, 'remember_api_key_checkbox'):
+            self.parent_window.remember_api_key_checkbox.setChecked(has_saved_key)
 
-            # 更新主界面的复选框状态
-            has_saved_key = bool(current_api_key)
-            if hasattr(self.parent_window, 'remember_api_key_checkbox'):
-                self.parent_window.remember_api_key_checkbox.setChecked(has_saved_key)
-
-            # 同时更新本地配置中的默认配置API Key
-            for i, profile in enumerate(self.profiles):
-                if profile["id"] == profile_id:
-                    self.profiles[i]["api_key"] = current_api_key
-                    break
-
-            # 更新config中的profiles
-            self.config[config.LLM_PROFILES_KEY] = {"profiles": self.profiles}
-
-            # 记录日志
-            if hasattr(self.parent_window, 'log_message'):
-                self.parent_window.log_message(f"已同步默认配置的API Key修改到主界面")
+        # 记录日志
+        if hasattr(self.parent_window, 'log_message'):
+            self.parent_window.log_message(f"已同步默认配置到主界面")
 
     def _cleanup_threads(self):
         """清理工作线程"""
