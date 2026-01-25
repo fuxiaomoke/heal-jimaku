@@ -665,7 +665,7 @@ class CloudTranscriptionDialog(QDialog):
 
         # === 窗口尺寸配置 ===
         self.DIALOG_SIZES = {
-            0: (900, 650),  # Web版
+            0: (900, 720),  # Web版（修复：从650增加到720，确保内容完整显示）
             1: (900, 800),  # API版（增加了模型选择行）
             2: (980, 850)   # Soniox版
         }
@@ -729,7 +729,11 @@ class CloudTranscriptionDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(10, self._center_on_parent)
+        # 确保弹窗尺寸正确（修复拖拽文件打开时高度不够的问题）
+        # 关键修复：先调用_on_provider_changed来设置页面策略，再更新尺寸
+        idx = self.provider_combo.currentIndex()
+        self._on_provider_changed(idx)
+        QTimer.singleShot(0, self._center_on_parent)
 
     def _center_on_parent(self):
         if self.parent_window:
