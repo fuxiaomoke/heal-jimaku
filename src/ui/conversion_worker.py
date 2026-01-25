@@ -150,10 +150,12 @@ class ConversionWorker(QObject):
                 lang_from_dialog = self.free_transcription_params.get("language")
                 num_speakers = self.free_transcription_params.get("num_speakers")
                 tag_events = self.free_transcription_params.get("tag_audio_events", True)
+                model_id = self.free_transcription_params.get("elevenlabs_web_model", "scribe_v2")  # 获取模型ID
 
                 transcription_data = self.elevenlabs_stt_client.transcribe_audio(
                     audio_file_path=audio_path, language_code=lang_from_dialog,
-                    num_speakers=num_speakers, tag_audio_events=tag_events
+                    num_speakers=num_speakers, tag_audio_events=tag_events,
+                    model_id=model_id  # 传递模型ID
                 )
                 if not self.is_running: self.signals.finished.emit("任务在ElevenLabs Web API调用后被取消。", False); return
                 if transcription_data is None: self.signals.finished.emit("ElevenLabs Web API 转录失败或返回空。", False); return
@@ -196,10 +198,12 @@ class ConversionWorker(QObject):
                         lang_from_dialog = self.cloud_transcription_params.get("language", "auto")
                         num_speakers = self.cloud_transcription_params.get("num_speakers", 0)
                         tag_events = self.cloud_transcription_params.get("tag_audio_events", True)
+                        model_id = self.cloud_transcription_params.get("elevenlabs_web_model", "scribe_v2")  # 获取模型ID
 
                         transcription_data = self.elevenlabs_stt_client.transcribe_audio(
                             audio_file_path=audio_path, language_code=lang_from_dialog,
-                            num_speakers=num_speakers, tag_audio_events=tag_events
+                            num_speakers=num_speakers, tag_audio_events=tag_events,
+                            model_id=model_id  # 传递模型ID
                         )
                         actual_source_format = "elevenlabs"
 
@@ -218,11 +222,13 @@ class ConversionWorker(QObject):
                         num_speakers = self.cloud_transcription_params.get("elevenlabs_api_num_speakers", 0)
                         enable_diarization = self.cloud_transcription_params.get("elevenlabs_api_enable_diarization", False)
                         tag_events = self.cloud_transcription_params.get("elevenlabs_api_tag_audio_events", False)
+                        model_id = self.cloud_transcription_params.get("elevenlabs_api_model", "scribe_v2")  # 获取模型ID
 
                         transcription_data = self.elevenlabs_stt_client.transcribe_audio_official_api(
                             audio_file_path=audio_path, api_key=api_key,
                             language_code=lang_from_dialog, num_speakers=num_speakers,
-                            enable_diarization=enable_diarization, tag_audio_events=tag_events
+                            enable_diarization=enable_diarization, tag_audio_events=tag_events,
+                            model_id=model_id  # 传递模型ID
                         )
                         actual_source_format = "elevenlabs_api"
 
