@@ -185,12 +185,33 @@ class LlmAdvancedSettingsDialog(QDialog):
         self.setWindowTitle("LLM高级设置")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(850, 700)  # 原始对话框尺寸
+        
+        # 根据屏幕大小动态调整对话框尺寸
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            screen_height = screen_geometry.height()
+            
+            # 如果屏幕高度小于900px，使用较小尺寸并启用滚动
+            if screen_height < 900:
+                dialog_width = 820  # 从750增加到820，给滚动条留更多空间
+                dialog_height = min(600, int(screen_height * 0.85))  # 最多占屏幕85%
+                self.use_scroll = True
+            else:
+                dialog_width = 900  # 从850增加到900
+                dialog_height = 700
+                self.use_scroll = False
+        else:
+            dialog_width = 900
+            dialog_height = 700
+            self.use_scroll = False
+        
+        self.setFixedSize(dialog_width, dialog_height)
 
         # 创建半透明容器
         self.container = QWidget(self)
         self.container.setObjectName("llmSettingsDialogContainer")
-        self.container.setGeometry(0, 0, 850, 700)  # 匹配对话框尺寸
+        self.container.setGeometry(0, 0, dialog_width, dialog_height)
 
         # 主布局
         dialog_layout = QVBoxLayout(self)
@@ -210,9 +231,7 @@ class LlmAdvancedSettingsDialog(QDialog):
         # 将对话框居中到父窗口
         if self.parent_window:
             parent_geometry = self.parent_window.geometry()
-            dialog_width = 850
-            dialog_height = 700
-
+            # 使用动态计算的尺寸
             # 计算居中位置
             center_x = parent_geometry.x() + (parent_geometry.width() - dialog_width) // 2
             center_y = parent_geometry.y() + (parent_geometry.height() - dialog_height) // 2
@@ -269,7 +288,33 @@ class LlmAdvancedSettingsDialog(QDialog):
         main_splitter.setStretchFactor(0, 1)  # 左侧不拉伸
         main_splitter.setStretchFactor(1, 3)  # 右侧拉伸3倍
 
-        self.inner_content_layout.addWidget(main_splitter)
+        # 如果需要滚动支持，用QScrollArea包装main_splitter
+        if self.use_scroll:
+            from PyQt6.QtWidgets import QScrollArea
+            scroll_area = QScrollArea()
+            
+            # 创建一个容器来包装main_splitter，并添加右侧内边距
+            scroll_content = QWidget()
+            scroll_content_layout = QVBoxLayout(scroll_content)
+            scroll_content_layout.setContentsMargins(0, 0, 15, 0)  # 右侧留15px给滚动条
+            scroll_content_layout.addWidget(main_splitter)
+            
+            scroll_area.setWidget(scroll_content)
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setStyleSheet("""
+                QScrollArea {
+                    background: transparent;
+                    border: none;
+                }
+                QScrollArea > QWidget > QWidget {
+                    background: transparent;
+                }
+            """)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.inner_content_layout.addWidget(scroll_area)
+        else:
+            self.inner_content_layout.addWidget(main_splitter)
 
     def _create_profile_list_panel(self) -> QWidget:
         """创建左侧模型列表面板 - 包含模型列表和2x2快速模板按钮"""

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox,
     QProgressBar, QGroupBox, QTextEdit, QCheckBox, QComboBox,
-    QAbstractItemView, QDialog, QSizePolicy
+    QAbstractItemView, QDialog, QSizePolicy, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QThread, QSize, pyqtSignal, QRect
 from PyQt6.QtGui import QIcon, QFont, QColor, QTextCursor, QPixmap, QPainter, QBrush, QLinearGradient, QPainterPath, QFontDatabase
@@ -887,7 +887,7 @@ class HealJimakuApp(QMainWindow):
 
         content_widget = TransparentWidget(bg_color=QColor(191,191,191,50))
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(25,25,25,25)
+        content_layout.setContentsMargins(25,25,40,25)  # 右侧留40px给滚动条（25+15）
         content_layout.setSpacing(15)
 
         api_group = QGroupBox("大模型 API KEY 设置(默认请输入ds官key)")
@@ -1162,7 +1162,30 @@ class HealJimakuApp(QMainWindow):
         content_layout.addWidget(export_group, export_weight)
         content_layout.addWidget(log_group, log_weight)
 
-        main_layout.addWidget(content_widget, 1)
+        # === 修改开始：添加滚动区域 ===
+        # 创建滚动区域作为保护层
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(content_widget)
+        scroll_area.setWidgetResizable(True)  # 关键：让内部控件自适应宽度
+        
+        # 美化滚动区域：让它透明且无边框，看起来像没加一样自然
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+        """)
+        
+        # 策略：垂直方向按需显示滚动条，水平方向永远关闭
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # 把滚动区域加到主布局里，而不是直接加 content_widget
+        main_layout.addWidget(scroll_area, 1)
+        # === 修改结束 ===
         
         self._update_input_mode_ui()
         self.apply_styles()
@@ -1225,9 +1248,15 @@ class HealJimakuApp(QMainWindow):
         max_allowed_width = int(screen_width * 0.9)
         max_allowed_height = int(screen_height * 0.9)
 
-        # 设置最小和最大尺寸约束 - 调整为1024宽度，对应合理高度
-        min_width = 1024  # 设置为1024，标准屏幕宽度
-        min_height = 864  # 调整为864，解决重叠问题
+        # 设置最小和最大尺寸约束 - 有了滚动条兜底，可以大胆降低最小高度
+        min_width = 960   # 稍微降低宽度限制
+        min_height = 600  # 直接降到 600！
+        
+        # 双保险：如果检测到屏幕真的很小，就进一步放宽
+        if screen_height < 900:
+            min_height = 550  # 给 1080P 150% 缩放留足余地
+            self._log_early(f"检测到小屏幕 ({screen_height}px)，最小高度调整为 {min_height}px")
+        
         max_width = max_allowed_width
         max_height = max_allowed_height
 

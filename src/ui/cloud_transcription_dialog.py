@@ -664,15 +664,44 @@ class CloudTranscriptionDialog(QDialog):
         self._pending_ocr_error = None
 
         # === 窗口尺寸配置 ===
-        self.DIALOG_SIZES = {
-            0: (900, 720),  # Web版（修复：从650增加到720，确保内容完整显示）
-            1: (900, 800),  # API版（增加了模型选择行）
-            2: (980, 850)   # Soniox版
-        }
+        # 根据屏幕大小动态调整对话框尺寸
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            screen_height = screen_geometry.height()
+            
+            # 如果屏幕高度小于900px，使用较小尺寸
+            if screen_height < 900:
+                self.DIALOG_SIZES = {
+                    0: (750, min(600, int(screen_height * 0.80))),  # Web版
+                    1: (750, min(650, int(screen_height * 0.85))),  # API版
+                    2: (880, min(700, int(screen_height * 0.90)))   # Soniox版（从800增加到880）
+                }
+            else:
+                self.DIALOG_SIZES = {
+                    0: (900, 720),   # Web版（原始尺寸）
+                    1: (900, 800),   # API版（原始尺寸）
+                    2: (1050, 850)   # Soniox版（从980增加到1050）
+                }
+        else:
+            self.DIALOG_SIZES = {
+                0: (900, 720),
+                1: (900, 800),
+                2: (1050, 850)
+            }
 
         # 窗口属性
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        
+        # 检测是否需要滚动支持（小屏幕）
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            screen_height = screen_geometry.height()
+            self.use_scroll = screen_height < 900
+        else:
+            self.use_scroll = False
 
         # 主容器
         container = QWidget(self)
@@ -702,10 +731,41 @@ class CloudTranscriptionDialog(QDialog):
         self._create_title_bar(main_layout)
         self._create_file_selection_area(main_layout)
         self._create_provider_selection_area(main_layout)
-        self._create_dynamic_config_area(main_layout)
         
-        # 弹性空间
-        main_layout.addStretch(1)
+        # 如果需要滚动支持，为动态配置区域创建滚动容器
+        if self.use_scroll:
+            from PyQt6.QtWidgets import QScrollArea
+            
+            # 创建滚动区域
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setStyleSheet("""
+                QScrollArea {
+                    background: transparent;
+                    border: none;
+                }
+                QScrollArea > QWidget > QWidget {
+                    background: transparent;
+                }
+            """)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            
+            # 创建滚动内容容器
+            scroll_content = QWidget()
+            scroll_content_layout = QVBoxLayout(scroll_content)
+            scroll_content_layout.setContentsMargins(0, 0, 15, 0)  # 右侧留15px给滚动条
+            scroll_content_layout.setSpacing(15)
+            
+            # 将动态配置区域添加到滚动内容中
+            self._create_dynamic_config_area(scroll_content_layout)
+            
+            scroll_area.setWidget(scroll_content)
+            main_layout.addWidget(scroll_area, 1)  # 占据主要空间
+        else:
+            # 不需要滚动，直接添加动态配置区域
+            self._create_dynamic_config_area(main_layout)
+            main_layout.addStretch(1)
         
         self._create_action_buttons(main_layout)
 
@@ -756,7 +816,12 @@ class CloudTranscriptionDialog(QDialog):
         
         self.setMinimumSize(0, 0) 
         self.resize(width, height)
-        self.setMinimumSize(800, 350)
+        
+        # 根据实际高度设置最小尺寸
+        min_width = min(700, width - 100)
+        min_height = min(350, height - 100)
+        self.setMinimumSize(min_width, min_height)
+        
         self._center_on_parent()
 
     def _on_provider_changed(self, index):
