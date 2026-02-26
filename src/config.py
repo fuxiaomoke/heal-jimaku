@@ -794,7 +794,8 @@ def migrate_legacy_config_to_profiles(config: dict) -> dict:
         "api_key": old_api_key,
         "temperature": old_temperature,
         "is_default": True,
-        "custom_headers": {}
+        "custom_headers": {},
+        "api_format": API_FORMAT_AUTO  # 添加API格式，使用auto自动检测
     }
 
     # 设置新的配置结构
@@ -837,7 +838,8 @@ def get_current_llm_profile(config: dict) -> dict:
         "api_key": "",
         "temperature": DEFAULT_LLM_TEMPERATURE,
         "is_default": True,
-        "custom_headers": {}
+        "custom_headers": {},
+        "api_format": API_FORMAT_AUTO  # 使用auto自动检测，更灵活
     }
 
 def update_current_llm_profile(config: dict, profile: dict) -> dict:

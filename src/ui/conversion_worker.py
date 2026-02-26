@@ -426,10 +426,9 @@ class ConversionWorker(QObject):
             llm_model_name = self.llm_config.get(USER_LLM_MODEL_NAME_KEY, DEFAULT_LLM_MODEL_NAME)
             llm_temperature = self.llm_config.get(USER_LLM_TEMPERATURE_KEY, DEFAULT_LLM_TEMPERATURE)
 
-            # 获取API格式配置
+            # 获取API格式配置 - 直接从 llm_config 读取
             import config as app_config
-            current_profile = app_config.get_current_llm_profile(self.llm_config)
-            llm_api_format = current_profile.get("api_format", app_config.API_FORMAT_AUTO)
+            llm_api_format = self.llm_config.get("api_format", app_config.API_FORMAT_AUTO)
 
             # 调用LLM API进行文本分割
             self.signals.log_message.emit(f"调用LLM API进行文本分割 (URL配置: '{llm_base_url_str}', 模型: '{llm_model_name}', 温度: {llm_temperature}, API格式: {llm_api_format})...")

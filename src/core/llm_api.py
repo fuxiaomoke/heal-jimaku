@@ -417,7 +417,8 @@ def _get_summary(
     custom_api_base_url_str: Optional[str],
     custom_model_name: Optional[str],
     custom_temperature: Optional[float],
-    signals_forwarder: Optional[Any] = None
+    signals_forwarder: Optional[Any] = None,
+    api_format: Optional[str] = None  # 新增：API格式参数
 ) -> Optional[str]:
     def _log_summary_api(message: str):
         _log_api_message(message, signals_forwarder, prefix="[LLM API - Summary]")
@@ -430,10 +431,18 @@ def _get_summary(
 
     _log_summary_api(f"向 LLM API 请求文本摘要 (URL: {target_url}, 模型: {effective_model}, 温度: {effective_summary_temperature})...")
 
-    # [FIX] 根据 API 格式构建请求 - 优先信任 api_format 参数
-    # 注意：_get_summary 目前没有接收 api_format 参数，需要从 URL 推断或添加参数
-    # 临时方案：通过 URL 判断，但优先级低于显式的 api_format
-    if "generativelanguage.googleapis.com" in target_url:
+    # 如果 api_format 是 auto 或 None，根据 URL 自动检测实际格式
+    effective_api_format = api_format
+    if effective_api_format == app_config.API_FORMAT_AUTO or effective_api_format is None:
+        if custom_api_base_url_str and "generativelanguage.googleapis.com" in custom_api_base_url_str:
+            effective_api_format = app_config.API_FORMAT_GEMINI
+        elif custom_api_base_url_str and "api.anthropic.com" in custom_api_base_url_str:
+            effective_api_format = app_config.API_FORMAT_CLAUDE
+        else:
+            effective_api_format = app_config.API_FORMAT_OPENAI
+
+    # 根据检测后的有效格式构建请求
+    if effective_api_format == app_config.API_FORMAT_GEMINI:
         # Gemini API 使用不同的请求格式和认证方式
         payload = {
             "contents": [{"parts": [{"text": f"系统提示：{system_prompt_summary}\n\n用户输入：{full_text}"}]}],
@@ -507,6 +516,16 @@ def call_llm_api_for_segmentation(
     )
     effective_temperature = custom_temperature if custom_temperature is not None else app_config.DEFAULT_LLM_TEMPERATURE
 
+    # 如果 api_format 是 auto，根据 URL 自动检测实际格式
+    effective_api_format = api_format
+    if effective_api_format == app_config.API_FORMAT_AUTO or effective_api_format is None:
+        if custom_api_base_url_str and "generativelanguage.googleapis.com" in custom_api_base_url_str:
+            effective_api_format = app_config.API_FORMAT_GEMINI
+        elif custom_api_base_url_str and "api.anthropic.com" in custom_api_base_url_str:
+            effective_api_format = app_config.API_FORMAT_CLAUDE
+        else:
+            effective_api_format = app_config.API_FORMAT_OPENAI
+
     detected_lang_code_for_prompt = None
     # 1. 优先使用明确传入的目标语言 (来自ASR或用户选择)
     if target_language and target_language in ['zh', 'ja', 'en', 'ko']: # 增加了 ko
@@ -557,7 +576,8 @@ def call_llm_api_for_segmentation(
         summary_text_optional = _get_summary(
             api_key, text_to_segment, system_prompt_summary_task,
             custom_api_base_url_str, custom_model_name, effective_temperature,
-            signals_forwarder=signals_forwarder
+            signals_forwarder=signals_forwarder,
+            api_format=effective_api_format  # 传递检测后的有效格式
         )
         if summary_text_optional: summary_text = summary_text_optional; _log_main_api("成功获取到摘要。")
         else: _log_main_api("未能获取到摘要，将不带摘要继续进行分割。")
@@ -577,9 +597,8 @@ def call_llm_api_for_segmentation(
         user_content_with_summary = f"【全文摘要】:\n{summary_text}\n\n【当前文本块】:\n{chunk}"
         if not summary_text: user_content_with_summary = f"【当前文本块】:\n{chunk}"
 
-        # [FIX] 根据 API 格式构建请求 - 优先信任 api_format 参数而不是域名猜测
-        # 这样可以正确支持 Gemini/Claude 的反向代理
-        if api_format == app_config.API_FORMAT_GEMINI:
+        # [FIX] 根据 API 格式构建请求 - 使用检测后的有效格式
+        if effective_api_format == app_config.API_FORMAT_GEMINI:
             # Gemini API 使用不同的请求格式和认证方式
             payload = {
                 "contents": [{"parts": [{"text": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]}],
@@ -590,7 +609,7 @@ def call_llm_api_for_segmentation(
             }
             # Gemini API 使用 URL 参数传递 API key（即使是代理也要这样）
             response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
-        elif api_format == app_config.API_FORMAT_CLAUDE:
+        elif effective_api_format == app_config.API_FORMAT_CLAUDE:
             # Claude API 使用 /v1/messages 格式
             payload = {
                 "model": effective_model,
