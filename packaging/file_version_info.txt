@@ -6,8 +6,8 @@ VSVersionInfo(
   ffi=FixedFileInfo(
     # filevers and prodvers should be always a tuple with four items: (1, 2, 3, 4)
     # Set not needed items to zero 0.
-    filevers=(0, 2, 3, 0),
-    prodvers=(0, 2, 3, 0),
+    filevers=(0, 2, 4, 0),
+    prodvers=(0, 2, 4, 0),
     # Contains a bitmask that specifies the valid bits 'flags'r
     mask=0x3f,
     # Contains a bitmask that specifies the Boolean attributes of the file.
@@ -36,12 +36,12 @@ VSVersionInfo(
         u'000004b0', # LangID: U.S. English, CharID: Unicode
         [StringStruct(u'CompanyName', u'fuxiaomoke'), # 作者信息可以放在这里
         StringStruct(u'FileDescription', u'治幕 - 字幕优化工具'),
-        StringStruct(u'FileVersion', u'0.2.3.0'),
+        StringStruct(u'FileVersion', u'0.2.4.0'),
         StringStruct(u'InternalName', u'治幕'),
         StringStruct(u'LegalCopyright', u'Copyright © 2025-2026 fuxiaomoke. All rights reserved.'), # 或者这里
         StringStruct(u'OriginalFilename', u'治幕.exe'),
         StringStruct(u'ProductName', u'治幕'),
-        StringStruct(u'ProductVersion', u'0.2.3.0')])
+        StringStruct(u'ProductVersion', u'0.2.4.0')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [0, 1200])]) # 0000 04b0 -> 0, 1200 (Hex to Dec)
   ]
