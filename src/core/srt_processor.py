@@ -3107,6 +3107,42 @@ class SrtProcessor:
 
         return corrected_segments, correction_hints
 
+    def _is_reasoning_model(self, model_name: str) -> bool:
+        """
+        判断是否为reasoning模型（需要特殊参数处理）
+        
+        Reasoning模型特征：
+        1. 使用 max_completion_tokens 而不是 max_tokens
+        2. 不支持 temperature 等采样参数
+        
+        包括：
+        - o系列: o1, o1-mini, o3, o3-mini, o4-mini 等
+        - gpt-5系列: gpt-5, gpt-5.1, gpt-5.2, gpt-5.3 及其变体
+        
+        Args:
+            model_name: 模型名称
+            
+        Returns:
+            bool: 如果是reasoning模型返回True
+        """
+        if not model_name:
+            return False
+        
+        import re
+        model_lower = model_name.lower()
+        
+        # o系列 reasoning模型
+        # 匹配: o1, o1-xxx, o3, o3-xxx, o4, o4-xxx 等
+        if re.match(r'^o\d+', model_lower):
+            return True
+        
+        # gpt-5系列及其所有变体
+        # 匹配: gpt-5, gpt-5.x, gpt-5-xxx, gpt5-xxx 等
+        if re.match(r'^gpt-?5', model_lower):
+            return True
+        
+        return False
+
     def _call_llm_api(self, prompt: str, batch_segments: List[str]) -> str:
         """
         调用LLM API进行文本纠错
@@ -3215,11 +3251,19 @@ class SrtProcessor:
                     "messages": [
                         {"role": "system", "content": system_content},
                         {"role": "user", "content": user_content}
-                    ],
-                    "max_tokens": 4000
+                    ]
                 }
-                if temperature is not None:
-                    payload["temperature"] = temperature
+                
+                # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
+                if self._is_reasoning_model(model_name):
+                    # 使用 max_completion_tokens 而不是 max_tokens
+                    payload["max_completion_tokens"] = 4000
+                    # 不传 temperature，使用模型默认值
+                else:
+                    # 传统模型使用 max_tokens 和自定义 temperature
+                    payload["max_tokens"] = 4000
+                    if temperature is not None:
+                        payload["temperature"] = temperature
 
                 headers = {
                     "Content-Type": "application/json",

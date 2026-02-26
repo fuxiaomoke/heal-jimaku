@@ -28,6 +28,42 @@ DEFAULT_SYSTEM_PROMPT_FOR_SUMMARY = app_config.DEEPSEEK_SYSTEM_PROMPT_SUMMARY_EN
 MAX_CHARS_PER_CHUNK = 2800
 
 
+def _is_reasoning_model(model_name: str) -> bool:
+    """
+    判断是否为reasoning模型（需要特殊参数处理）
+    
+    Reasoning模型特征：
+    1. 使用 max_completion_tokens 而不是 max_tokens
+    2. 不支持 temperature 等采样参数
+    
+    包括：
+    - o系列: o1, o1-mini, o3, o3-mini, o4-mini 等
+    - gpt-5系列: gpt-5, gpt-5.1, gpt-5.2, gpt-5.3 及其变体
+    
+    Args:
+        model_name: 模型名称
+        
+    Returns:
+        bool: 如果是reasoning模型返回True
+    """
+    if not model_name:
+        return False
+    
+    import re
+    model_lower = model_name.lower()
+    
+    # o系列 reasoning模型
+    # 匹配: o1, o1-xxx, o3, o3-xxx, o4, o4-xxx 等
+    if re.match(r'^o\d+', model_lower):
+        return True
+    
+    # gpt-5系列及其所有变体
+    # 匹配: gpt-5, gpt-5.x, gpt-5-xxx, gpt5-xxx 等
+    if re.match(r'^gpt-?5', model_lower):
+        return True
+    
+    return False
+
 def _parse_api_url_and_model(
     input_base_url_str: Optional[str],
     input_model_name: Optional[str],
@@ -456,7 +492,17 @@ def _get_summary(
     else:
         # 其他 API 使用 OpenAI 兼容格式（包括 Claude，因为摘要任务可以用 system prompt）
         payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_summary}, {"role": "user", "content": full_text}]}
-        if custom_temperature is not None: payload["temperature"] = effective_summary_temperature
+        
+        # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
+        if _is_reasoning_model(effective_model):
+            # 使用 max_completion_tokens 而不是 max_tokens
+            payload["max_completion_tokens"] = 8192
+            # 不传 temperature，使用模型默认值
+        else:
+            # 传统模型使用 max_tokens 和自定义 temperature
+            payload["max_tokens"] = 8192
+            if custom_temperature is not None:
+                payload["temperature"] = effective_summary_temperature
 
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
         response = requests.post(target_url, headers=headers, json=payload, timeout=180)
@@ -627,7 +673,17 @@ def call_llm_api_for_segmentation(
         else:
             # OpenAI 兼容格式 (默认格式，包括 AUTO 模式)
             payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_segmentation}, {"role": "user", "content": user_content_with_summary }]}
-            if custom_temperature is not None: payload["temperature"] = effective_temperature
+            
+            # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
+            if _is_reasoning_model(effective_model):
+                # 使用 max_completion_tokens 而不是 max_tokens
+                payload["max_completion_tokens"] = 8192
+                # 不传 temperature，使用模型默认值
+            else:
+                # 传统模型使用 max_tokens 和自定义 temperature
+                payload["max_tokens"] = 8192
+                if custom_temperature is not None:
+                    payload["temperature"] = effective_temperature
 
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
             response = requests.post(target_url, headers=headers, json=payload, timeout=180)
