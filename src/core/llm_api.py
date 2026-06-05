@@ -28,6 +28,150 @@ DEFAULT_SYSTEM_PROMPT_FOR_SUMMARY = app_config.DEEPSEEK_SYSTEM_PROMPT_SUMMARY_EN
 # 文本分块处理的默认最大字符数（模型未知时的兜底值）
 MAX_CHARS_PER_CHUNK = 2800
 
+# LLM 请求重试与失败兜底配置
+LLM_REQUEST_TIMEOUT_SECONDS = 180
+LLM_MAX_REQUEST_ATTEMPTS = 3
+LLM_RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+LLM_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+LLM_SPLIT_RETRY_CHARS = max(700, MAX_CHARS_PER_CHUNK // 2)
+LLM_LOCAL_FALLBACK_MAX_CHARS = 120
+
+
+def _sleep_with_cancel_check(seconds: float, is_running_func=None) -> bool:
+    """可被取消打断的短等待。返回 False 表示等待期间任务已取消。"""
+    end_time = time.time() + seconds
+    while time.time() < end_time:
+        if is_running_func and not is_running_func():
+            return False
+        time.sleep(min(0.2, max(0.0, end_time - time.time())))
+    return not (is_running_func and not is_running_func())
+
+
+def _should_retry_status(status_code: int) -> bool:
+    return status_code in LLM_RETRYABLE_STATUS_CODES
+
+
+def _post_json_with_retries(
+    url: str,
+    logger_func,
+    context_label: str,
+    is_running_func=None,
+    max_attempts: int = LLM_MAX_REQUEST_ATTEMPTS,
+    **kwargs,
+) -> Optional[requests.Response]:
+    """发送 JSON POST 请求，并对临时性失败做有限重试。"""
+    kwargs.setdefault("timeout", LLM_REQUEST_TIMEOUT_SECONDS)
+
+    for attempt in range(1, max_attempts + 1):
+        if is_running_func and not is_running_func():
+            logger_func(f"{context_label} 请求前任务已取消。")
+            return None
+
+        try:
+            response = requests.post(url, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt >= max_attempts:
+                logger_func(f"错误: {context_label} 请求失败，已尝试 {attempt}/{max_attempts} 次: {e}")
+                return None
+            delay = LLM_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(LLM_RETRY_BACKOFF_SECONDS) - 1)]
+            logger_func(f"{context_label} 请求失败 ({type(e).__name__})，{delay:.1f} 秒后重试 {attempt + 1}/{max_attempts}...")
+            if not _sleep_with_cancel_check(delay, is_running_func):
+                logger_func(f"{context_label} 重试等待期间任务已取消。")
+                return None
+            continue
+        except requests.exceptions.RequestException as e:
+            response = e.response
+            if response is None or _should_retry_status(response.status_code):
+                if attempt >= max_attempts:
+                    logger_func(f"错误: {context_label} 请求异常，已尝试 {attempt}/{max_attempts} 次: {e}")
+                    return response
+                delay = LLM_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(LLM_RETRY_BACKOFF_SECONDS) - 1)]
+                logger_func(f"{context_label} 请求异常 ({e})，{delay:.1f} 秒后重试 {attempt + 1}/{max_attempts}...")
+                if not _sleep_with_cancel_check(delay, is_running_func):
+                    logger_func(f"{context_label} 重试等待期间任务已取消。")
+                    return None
+                continue
+            raise
+
+        if _should_retry_status(response.status_code) and attempt < max_attempts:
+            delay = LLM_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(LLM_RETRY_BACKOFF_SECONDS) - 1)]
+            logger_func(f"{context_label} 返回临时性错误 HTTP {response.status_code}，{delay:.1f} 秒后重试 {attempt + 1}/{max_attempts}...")
+            if not _sleep_with_cancel_check(delay, is_running_func):
+                logger_func(f"{context_label} 重试等待期间任务已取消。")
+                return None
+            continue
+
+        setattr(response, "_llm_retry_attempt", attempt)
+        if attempt > 1:
+            logger_func(f"{context_label} 第 {attempt}/{max_attempts} 次请求已返回。")
+        return response
+
+    return None
+
+
+def _split_long_segment_locally(text: str, max_chars: int) -> List[str]:
+    """把过长文本按弱标点、空格或固定长度进一步切开。"""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    result: List[str] = []
+    pos = 0
+    while pos < len(text):
+        end = min(pos + max_chars, len(text))
+        cut = end
+        if end < len(text):
+            search_start = max(pos, end - max(30, max_chars // 3))
+            best = -1
+            for m in re.finditer(r'[，、,；;：:\s]', text[search_start:end]):
+                candidate = search_start + m.end()
+                if candidate > pos:
+                    best = candidate
+            if best != -1:
+                cut = best
+        part = text[pos:cut].strip()
+        if part:
+            result.append(part)
+        pos = cut
+    return result
+
+
+def _fallback_segment_text_locally(text: str, logger_func=None) -> List[str]:
+    """LLM 不可用时的本地规则断句兜底，确保原文不整块丢失。"""
+    if not text or not text.strip():
+        return []
+
+    primary_parts: List[str] = []
+    for line in re.split(r'\n+', text):
+        line = line.strip()
+        if not line:
+            continue
+        start = 0
+        for m in re.finditer(r'(?:[。．！？!?]|\.{3,}|…+|‥+)', line):
+            end = m.end()
+            part = line[start:end].strip()
+            if part:
+                primary_parts.append(part)
+            start = end
+        tail = line[start:].strip()
+        if tail:
+            primary_parts.append(tail)
+
+    if not primary_parts:
+        primary_parts = [text.strip()]
+
+    segments: List[str] = []
+    for part in primary_parts:
+        segments.extend(_split_long_segment_locally(part, LLM_LOCAL_FALLBACK_MAX_CHARS))
+
+    segments = _preprocess_bracket_mixed_segments(segments, logger_func or (lambda _msg: None))
+    segments = _validate_and_fix_segments(segments, logger_func or (lambda _msg: None))
+    if logger_func:
+        logger_func(f"已使用本地规则兜底断句，生成 {len(segments)} 个片段。")
+    return segments
+
 
 def _is_reasoning_model(model_name: str) -> bool:
     """
@@ -594,7 +738,14 @@ def _get_summary(
             "generationConfig": gen_config
         }
         # Gemini API 使用 URL 参数传递 API key
-        response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
+        response = _post_json_with_retries(
+            f"{target_url}?key={api_key}",
+            _log_summary_api,
+            "摘要请求",
+            json=payload,
+        )
+        if response is None:
+            return None
     else:
         # 其他 API 使用 OpenAI 兼容格式（包括 Claude，因为摘要任务可以用 system prompt）
         payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_summary}, {"role": "user", "content": full_text}]}
@@ -617,7 +768,15 @@ def _get_summary(
                 payload[k] = v
 
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-        response = requests.post(target_url, headers=headers, json=payload, timeout=180)
+        response = _post_json_with_retries(
+            target_url,
+            _log_summary_api,
+            "摘要请求",
+            headers=headers,
+            json=payload,
+        )
+        if response is None:
+            return None
 
     try:
         response.raise_for_status(); data = response.json()
@@ -766,140 +925,217 @@ def call_llm_api_for_segmentation(
         if text_to_segment.strip(): text_chunks = [text_to_segment]; num_chunks = 1
         else: return []
 
-    for i, chunk in enumerate(text_chunks):
-        if not is_running(): _log_main_api(f"处理块 {i+1}/{num_chunks} 前任务已取消。"); return all_segments if all_segments else None 
-        _log_main_api(f"向 LLM API 发送块 {i+1}/{num_chunks} 进行分割 (URL: {target_url}, 模型: {effective_model}, 温度: {effective_temperature})...")
-        
-        user_content_with_summary = f"【全文摘要】:\n{summary_text}\n\n【当前文本块】:\n{chunk}"
-        if not summary_text: user_content_with_summary = f"【当前文本块】:\n{chunk}"
+    stats = {
+        "direct_success": 0,
+        "retry_success": 0,
+        "split_recovery": 0,
+        "fallback": 0,
+    }
 
-        # 获取思考模式参数
+    def _parse_segments_from_response(data: dict, chunk_label: str) -> tuple[Optional[List[str]], str, str]:
+        content = None
+        finish_reason = "unknown"
+        if "choices" in data and data["choices"] and isinstance(data["choices"], list) and len(data["choices"]) > 0 and \
+           isinstance(data["choices"][0], dict) and data["choices"][0].get("message", {}).get("content") is not None:
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content")
+            finish_reason = choice.get("finish_reason", "unknown")
+        elif data.get("candidates") and isinstance(data["candidates"], list) and len(data["candidates"]) > 0 and \
+             isinstance(data["candidates"][0], dict) and \
+             data["candidates"][0].get("content", {}).get("parts") and \
+             isinstance(data["candidates"][0].get("content").get("parts"), list) and \
+             len(data["candidates"][0].get("content").get("parts")) > 0:
+            parts = data["candidates"][0]["content"]["parts"]
+            content = _extract_gemini_text(parts)
+            finish_reason = data["candidates"][0].get("finishReason", "unknown")
+
+        if content is None or not content.strip():
+            error_info = data.get('error', {})
+            if not error_info and data.get("code") and data.get("message"):
+                error_info = data
+            error_type = error_info.get('type', error_info.get("status"))
+            error_code_val = error_info.get('code')
+            reason = f"响应内容为空或格式不符。类型: {error_type}, Code: {error_code_val}, 响应: {str(data)[:500]}"
+            return None, finish_reason, reason
+
+        raw_segments = [seg.strip() for seg in content.split('\n') if seg.strip()]
+        if raw_segments:
+            _log_main_api(f"{chunk_label} 成功获得 {len(raw_segments)} 个文本片段")
+        preprocessed_segments = _preprocess_bracket_mixed_segments(raw_segments, _log_main_api)
+        segments_from_chunk = _validate_and_fix_segments(preprocessed_segments, _log_main_api)
+        if not segments_from_chunk:
+            return None, finish_reason, "LLM 返回内容经清理后没有有效片段"
+        return segments_from_chunk, finish_reason, ""
+
+    def _segment_chunk_once(chunk: str, chunk_label: str) -> tuple[List[str], bool, str, bool]:
+        user_content_with_summary = f"【全文摘要】:\n{summary_text}\n\n【当前文本块】:\n{chunk}" if summary_text else f"【当前文本块】:\n{chunk}"
+
         thinking_params, effective_temp_after_thinking, max_tokens_override = _build_thinking_params(
             effective_model, thinking_level, effective_api_format, effective_temperature
         )
-
-        # 根据模型能力动态确定 max_tokens
-        # 断句任务输出不会超过输入长度，限制上限为 16384 避免服务器过度分配资源
         model_max_tokens = min(get_max_output_tokens(effective_model), 16384)
 
-        # [FIX] 根据 API 格式构建请求 - 使用检测后的有效格式
-        if effective_api_format == app_config.API_FORMAT_GEMINI:
-            # Gemini API 使用不同的请求格式和认证方式
-            gen_config = {"maxOutputTokens": model_max_tokens}
-            if effective_temp_after_thinking is not None:
-                gen_config["temperature"] = effective_temp_after_thinking
-            # 注入 Gemini 思考参数
-            if "thinkingConfig" in thinking_params:
-                gen_config["thinkingConfig"] = thinking_params["thinkingConfig"]
-            payload = {
-                "contents": [{"parts": [{"text": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]}],
-                "generationConfig": gen_config
-            }
-            # Gemini API 使用 URL 参数传递 API key（即使是代理也要这样）
-            response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
-        elif effective_api_format == app_config.API_FORMAT_CLAUDE:
-            # Claude API 使用 /v1/messages 格式
-            max_tok = max_tokens_override if max_tokens_override else model_max_tokens
-            payload = {
-                "model": effective_model,
-                "max_tokens": max_tok,
-                "messages": [{"role": "user", "content": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]
-            }
-            if effective_temp_after_thinking is not None:
-                payload["temperature"] = effective_temp_after_thinking
-            # 注入 Claude 思考参数
-            for k, v in thinking_params.items():
-                payload[k] = v
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "anthropic-version": "2023-06-01"
-            }
-            response = requests.post(target_url, headers=headers, json=payload, timeout=180)
-        else:
-            # OpenAI 兼容格式 (默认格式，包括 AUTO 模式)
-            payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_segmentation}, {"role": "user", "content": user_content_with_summary }]}
-
-            # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
-            if _is_reasoning_model(effective_model):
-                # 使用 max_completion_tokens 而不是 max_tokens
-                payload["max_completion_tokens"] = model_max_tokens
-                # 不传 temperature，使用模型默认值
-            else:
-                # 传统模型使用 max_tokens 和自定义 temperature
+        try:
+            if effective_api_format == app_config.API_FORMAT_GEMINI:
+                gen_config = {"maxOutputTokens": model_max_tokens}
+                if effective_temp_after_thinking is not None:
+                    gen_config["temperature"] = effective_temp_after_thinking
+                if "thinkingConfig" in thinking_params:
+                    gen_config["thinkingConfig"] = thinking_params["thinkingConfig"]
+                payload = {
+                    "contents": [{"parts": [{"text": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]}],
+                    "generationConfig": gen_config
+                }
+                response = _post_json_with_retries(
+                    f"{target_url}?key={api_key}", _log_main_api, chunk_label,
+                    is_running_func=is_running, json=payload
+                )
+            elif effective_api_format == app_config.API_FORMAT_CLAUDE:
                 max_tok = max_tokens_override if max_tokens_override else model_max_tokens
-                payload["max_tokens"] = max_tok
+                payload = {
+                    "model": effective_model,
+                    "max_tokens": max_tok,
+                    "messages": [{"role": "user", "content": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]
+                }
                 if effective_temp_after_thinking is not None:
                     payload["temperature"] = effective_temp_after_thinking
-
-            # 注入 OpenAI 兼容的思考参数
-            for k, v in thinking_params.items():
-                if k != "thinkingConfig":
+                for k, v in thinking_params.items():
                     payload[k] = v
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "anthropic-version": "2023-06-01"
+                }
+                response = _post_json_with_retries(
+                    target_url, _log_main_api, chunk_label,
+                    is_running_func=is_running, headers=headers, json=payload
+                )
+            else:
+                payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_segmentation}, {"role": "user", "content": user_content_with_summary}]}
+                if _is_reasoning_model(effective_model):
+                    payload["max_completion_tokens"] = model_max_tokens
+                else:
+                    max_tok = max_tokens_override if max_tokens_override else model_max_tokens
+                    payload["max_tokens"] = max_tok
+                    if effective_temp_after_thinking is not None:
+                        payload["temperature"] = effective_temp_after_thinking
+                for k, v in thinking_params.items():
+                    if k != "thinkingConfig":
+                        payload[k] = v
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+                response = _post_json_with_retries(
+                    target_url, _log_main_api, chunk_label,
+                    is_running_func=is_running, headers=headers, json=payload
+                )
 
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-            response = requests.post(target_url, headers=headers, json=payload, timeout=180)
+            if response is None:
+                return [], False, "请求未返回响应", False
+            if not is_running():
+                return [], False, "任务已取消", False
 
-        try:
-            if not is_running(): _log_main_api(f"API 对块 {i+1}/{num_chunks} 响应接收后任务已取消。"); return all_segments if all_segments else None
-            response.raise_for_status(); data = response.json()
-            if not is_running(): _log_main_api(f"API 对块 {i+1}/{num_chunks} 响应解析后任务已取消。"); return all_segments if all_segments else None
-            content = None; finish_reason = "unknown"
-            if "choices" in data and data["choices"] and isinstance(data["choices"], list) and len(data["choices"]) > 0 and \
-               isinstance(data["choices"][0], dict) and data["choices"][0].get("message", {}).get("content") is not None:
-                choice = data["choices"][0]; content = choice.get("message", {}).get("content"); finish_reason = choice.get("finish_reason", "unknown")
-            elif data.get("candidates") and isinstance(data["candidates"], list) and len(data["candidates"]) > 0 and \
-                 isinstance(data["candidates"][0], dict) and \
-                 data["candidates"][0].get("content", {}).get("parts") and \
-                 isinstance(data["candidates"][0].get("content").get("parts"), list) and \
-                 len(data["candidates"][0].get("content").get("parts")) > 0:
-                parts = data["candidates"][0]["content"]["parts"]
-                content = _extract_gemini_text(parts); finish_reason = data["candidates"][0].get("finishReason", "unknown")
+            retried = getattr(response, "_llm_retry_attempt", 1) > 1
+            response.raise_for_status()
+            data = response.json()
+            if not is_running():
+                return [], False, "任务已取消", retried
 
-            if content is not None:
-                raw_segments = [seg.strip() for seg in content.split('\n') if seg.strip()]
-                segments_from_chunk = []
+            segments_from_chunk, finish_reason, reason = _parse_segments_from_response(data, chunk_label)
+            if segments_from_chunk is None:
+                _log_main_api(f"错误: LLM API 对 {chunk_label} 的响应无有效片段: {reason}")
+                return [], False, reason, retried
+            _log_main_api(f"{chunk_label} 修正后获得 {len(segments_from_chunk)} 个片段。完成原因: {finish_reason}")
+            if finish_reason == "length" or finish_reason == "MAX_TOKENS":
+                _log_main_api(f"警告: {chunk_label} 的输出可能因为达到API的默认max_tokens限制而被截断。")
+            return segments_from_chunk, True, finish_reason, retried
 
-                # 处理分割结果
-                if len(raw_segments) > 0:
-                    _log_main_api(f"块 {i+1}/{num_chunks} 成功获得 {len(raw_segments)} 个文本片段")
-
-                # 预处理：检测并修正括号内容混合的分割
-                preprocessed_segments = _preprocess_bracket_mixed_segments(raw_segments, _log_main_api)
-
-                # 验证并可能修正分割结果
-                segments_from_chunk = _validate_and_fix_segments(preprocessed_segments, _log_main_api)
-
-                all_segments.extend(segments_from_chunk)
-                _log_main_api(f"块 {i+1}/{num_chunks} 修正后获得 {len(segments_from_chunk)} 个片段。完成原因: {finish_reason}")
-                if finish_reason == "length" or finish_reason == "MAX_TOKENS":
-                    _log_main_api(f"警告: 块 {i+1}/{num_chunks} 的输出可能因为达到API的默认max_tokens限制而被截断。")
-            else: 
-                error_info = data.get('error', {}); 
-                if not error_info and data.get("code") and data.get("message"): error_info = data 
-                error_msg = error_info.get('message', str(data)); error_type = error_info.get('type', error_info.get("status")); error_code_val = error_info.get('code')
-                _log_main_api(f"错误: LLM API 对块 {i+1}/{num_chunks} 的响应格式错误或API返回错误。类型: {error_type}, Code: {error_code_val}, 消息: {str(data)[:500]}")
-        except requests.exceptions.Timeout: _log_main_api(f"错误: LLM API 对块 {i+1}/{num_chunks} 的请求超时 (180秒)。URL: {target_url}")
-        except requests.exceptions.RequestException as e: 
-            error_details = ""; status_code = 'N/A'
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            status_code = 'N/A'
             if e.response is not None:
                 status_code = e.response.status_code
-                try: 
-                    err_json_data = e.response.json(); err_info_openai = err_json_data.get('error', {}); err_info_gemini = err_json_data if "message" in err_json_data and "code" in err_json_data else {}
-                    message = err_info_openai.get('message', err_info_gemini.get('message', e.response.text)); err_type = err_info_openai.get('type', err_info_gemini.get('status', 'UnknownType')); err_code = err_info_openai.get('code', err_info_gemini.get('code', 'UnknownCode'))
+                try:
+                    err_json_data = e.response.json()
+                    err_info_openai = err_json_data.get('error', {})
+                    err_info_gemini = err_json_data if "message" in err_json_data and "code" in err_json_data else {}
+                    message = err_info_openai.get('message', err_info_gemini.get('message', e.response.text))
+                    err_type = err_info_openai.get('type', err_info_gemini.get('status', 'UnknownType'))
+                    err_code = err_info_openai.get('code', err_info_gemini.get('code', 'UnknownCode'))
                     error_details = f": [{err_type}/{err_code}] {message}"
-                except requests.exceptions.JSONDecodeError: error_details = f": {e.response.text[:200]}"
-            else: error_details = f": {str(e)}"
-            _log_main_api(f"错误: LLM API 对块 {i+1}/{num_chunks} 的请求失败 (状态码: {status_code}, URL: {target_url}){error_details}")
-        except Exception as e: _log_main_api(f"错误: 处理 LLM API 对块 {i+1}/{num_chunks} 的响应时发生未知错误 (URL: {target_url}): {e}"); _log_main_api(traceback.format_exc())
+                except requests.exceptions.JSONDecodeError:
+                    error_details = f": {e.response.text[:200]}"
+            else:
+                error_details = f": {str(e)}"
+            reason = f"请求失败 (状态码: {status_code}, URL: {target_url}){error_details}"
+            _log_main_api(f"错误: LLM API 对 {chunk_label} 的{reason}")
+            return [], False, reason, False
+        except Exception as e:
+            reason = f"处理响应时发生未知错误 (URL: {target_url}): {e}"
+            _log_main_api(f"错误: LLM API 对 {chunk_label} 的{reason}")
+            _log_main_api(traceback.format_exc())
+            return [], False, reason, False
+
+    def _recover_chunk(chunk: str, chunk_label: str) -> List[str]:
+        segments, ok, reason, retried = _segment_chunk_once(chunk, chunk_label)
+        if ok:
+            if retried:
+                stats["retry_success"] += 1
+            else:
+                stats["direct_success"] += 1
+            return segments
+
+        if not is_running():
+            return []
+
+        if len(chunk) > LLM_SPLIT_RETRY_CHARS:
+            _log_main_api(f"{chunk_label} 多次请求后仍失败，尝试切成更小文本块重新处理。原因: {reason}")
+            sub_chunks = _split_text_into_chunks(chunk, LLM_SPLIT_RETRY_CHARS, signals_forwarder)
+            if sub_chunks and len(sub_chunks) > 1:
+                recovered: List[str] = []
+                used_split = False
+                for sub_idx, sub_chunk in enumerate(sub_chunks):
+                    if not is_running():
+                        return recovered
+                    sub_label = f"{chunk_label}-{sub_idx + 1}/{len(sub_chunks)}"
+                    sub_segments, sub_ok, sub_reason, _sub_retried = _segment_chunk_once(sub_chunk, sub_label)
+                    if sub_ok:
+                        used_split = True
+                        recovered.extend(sub_segments)
+                    else:
+                        _log_main_api(f"{sub_label} 仍失败，使用本地规则兜底。原因: {sub_reason}")
+                        fallback = _fallback_segment_text_locally(sub_chunk, _log_main_api)
+                        stats["fallback"] += 1
+                        recovered.extend(fallback)
+                if used_split:
+                    stats["split_recovery"] += 1
+                return recovered
+
+        _log_main_api(f"{chunk_label} 使用本地规则兜底，避免该段文本丢失。原因: {reason}")
+        stats["fallback"] += 1
+        return _fallback_segment_text_locally(chunk, _log_main_api)
+
+    for i, chunk in enumerate(text_chunks):
+        if not is_running():
+            _log_main_api(f"处理块 {i+1}/{num_chunks} 前任务已取消。")
+            return all_segments if all_segments else None
+        _log_main_api(f"向 LLM API 发送块 {i+1}/{num_chunks} 进行分割 (URL: {target_url}, 模型: {effective_model}, 温度: {effective_temperature})...")
+        all_segments.extend(_recover_chunk(chunk, f"块 {i+1}/{num_chunks}"))
         if signals_forwarder and hasattr(signals_forwarder, 'llm_progress_signal') and hasattr(signals_forwarder.llm_progress_signal, 'emit'):
              signals_forwarder.llm_progress_signal.emit(int(((i + 1) / num_chunks) * 100))
         if num_chunks > 1 and i < num_chunks - 1:
-            if not is_running(): _log_main_api(f"处理完块 {i+1}/{num_chunks} 后任务已取消，不再延时。"); return all_segments if all_segments else None
+            if not is_running():
+                _log_main_api(f"处理完块 {i+1}/{num_chunks} 后任务已取消，不再延时。")
+                return all_segments if all_segments else None
             time.sleep(0.5)
-    if not all_segments and text_to_segment.strip(): _log_main_api("所有块处理完毕，但未能从任何块中获取到有效的分割结果。"); return None 
-    _log_main_api(f"所有 {num_chunks} 个块处理完成。总共收集到 {len(all_segments)} 个片段。"); return all_segments
+    if not all_segments and text_to_segment.strip():
+        _log_main_api("所有块处理完毕，但未能从任何块中获取到有效的分割结果。")
+        return None
+    _log_main_api(
+        f"LLM分割统计: 原始块={num_chunks}, 直接成功={stats['direct_success']}, "
+        f"重试恢复={stats['retry_success']}, 拆分恢复={stats['split_recovery']}, "
+        f"本地兜底={stats['fallback']}, 输出片段={len(all_segments)}"
+    )
+    _log_main_api(f"所有 {num_chunks} 个块处理完成。总共收集到 {len(all_segments)} 个片段。")
+    return all_segments
 
 # --- 测试连接函数 ---
 def _preprocess_bracket_mixed_segments(segments: List[str], logger_func) -> List[str]:
