@@ -23,7 +23,7 @@ class SonioxTranscriptionConfig:
     context_terms: List[str] = None
     context_text: str = None
     context_general: List[Dict[str, str]] = None
-    model: str = "stt-async-v4"
+    model: str = "stt-async-v5"
 
     def __post_init__(self):
         if self.language_hints is None:
