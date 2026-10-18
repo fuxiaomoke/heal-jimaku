@@ -1,9 +1,0 @@
-﻿PyQt6
-requests
-requests-toolbelt
-mutagen
-gradio_client #用于处理PDF文档
-langdetect #验证检测语言
-python-docx #处理Word文档
-# 构建工具（仅开发需要）
-pyinstaller 

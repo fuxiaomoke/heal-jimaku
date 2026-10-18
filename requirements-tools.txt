@@ -1,9 +1,0 @@
-# 命令行工具额外依赖
-# 这些依赖只在使用 tools/ 目录下的命令行工具时需要
-
-# PyAV - FFmpeg的Python绑定，用于视频音频提取和处理
-# 注意：这个库体积较大，GUI程序不需要
-av
-
-# 基础依赖（从requirements.txt继承）
--r requirements.txt
