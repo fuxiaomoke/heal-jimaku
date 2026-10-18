@@ -2,9 +2,11 @@
 
 > **⚠️ 项目状态（2026 年 10 月）**
 >
-> **本项目的维护停了。** 我的精力现在都在别的项目上，暂时没有余力加功能或者修问题。
+> **本项目的维护暂时停止。** 我的精力现在都在别的项目上，暂时没有余力加功能或者修问题。
 >
 > 另外有个坏消息：**「免费获取JSON」不能用了。** ElevenLabs 从 2026 年 10 月起给免费转录接口加了人机验证（hCaptcha），每次转录都要先拿到一个一次性的验证令牌，没有令牌的请求一律返回 `401 Unauthorized`。这种验证只能在浏览器里完成，而治幕是 PyQt 做的桌面程序，没有浏览器内核，拿不到令牌，所以这个功能在当前版本上就是不能用了。**它不是 bug，重装或者等更新都不会好**，也不用再为它提 Issue 了，我这边也修不了。
+>
+> **需要免费转录的，请转去 [mai2srt](https://github.com/fuxiaomoke/mai2srt)。** 那是我另一个还在维护的项目：把音频或视频拖进去，用微软 AI Playground 上的 MAI-Transcribe-2 免费转录出词级时间戳，断句可以用大模型也可以纯规则，精修页能逐行改，最后直接导出 SRT——转录免费、不需要 GPU，Windows 10/11 都能跑。你要是现在就想"不花钱把音频变成字幕"，先用它就行。当然免费的东西都有变数，那边哪天失效也不奇怪，但至少现在还在更新。
 >
 > **其余功能都正常**，包括这个程序最主要的用法：
 >
@@ -12,9 +14,9 @@
 > - **ElevenLabs 官方 API**：填上自己的 API Key，走官方的付费通道；
 > - **Soniox 云端转录**：台本辅助、说话人分离都正常。
 >
-> 以后我会重写一版 v1.0，换掉现在这套界面框架，界面也重新设计。做好会在这个仓库发布，README 里也会写明。在那之前，v0.2.5 和更早的安装包会一直留在 [Releases](https://github.com/fuxiaomoke/heal-jimaku/releases) 里，随时可以下载。
+> 以后我会重写一版 v1.0：换掉现在这套界面框架、界面重新设计，**免费转录和云端转录都会保留**——新框架里本来就带浏览器内核，这也正是这个功能在下一版能回来的原因。做好会在这个仓库发布，README 里也会写明。在那之前，v0.2.5 和更早的安装包会一直留在 [Releases](https://github.com/fuxiaomoke/heal-jimaku/releases) 里，随时可以下载。
 >
-> *Status (Oct 2026): maintenance mode — my focus is on other projects for now. ElevenLabs' free transcription entry started requiring a one-time hCaptcha token in Oct 2026; a PyQt desktop app has no browser engine to obtain one, so "free JSON" fails with 401. This is not a bug, and a version update cannot fix it. Everything else — local JSON post-processing, the ElevenLabs official API, Soniox — still works. A v1.0 rewrite is planned.*
+> *Status (Oct 2026): maintenance mode — my focus is on other projects for now. ElevenLabs' free transcription entry started requiring a one-time hCaptcha token in Oct 2026; a PyQt desktop app has no browser engine to obtain one, so "free JSON" fails with 401. This is not a bug, and a version update cannot fix it. Everything else — local JSON post-processing, the ElevenLabs official API, Soniox — still works. A v1.0 rewrite is planned, and transcription (free and paid) will be kept. If what you need is free transcription right now, use [mai2srt](https://github.com/fuxiaomoke/mai2srt) instead.*
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-yellow.svg)](https://www.apache.org/licenses/LICENSE-2.0) [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/) [![PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)](https://riverbankcomputing.com/software/pyqt/) [![DeepSeek API](https://img.shields.io/badge/AI%20Model-DeepSeek-orange.svg)](https://platform.deepseek.com/) [![ElevenLabs API](https://img.shields.io/badge/API-ElevenLabs-blueviolet.svg)](https://elevenlabs.io/) [![Soniox API](https://img.shields.io/badge/STT-Soniox-purple.svg)](https://soniox.com/) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fuxiaomoke/heal-jimaku)
 
@@ -220,7 +222,7 @@
 
 ## 🤝 贡献
 
-这个项目已经停更了，所以我不再接收新功能和技术建议——提了也没有人去实现，反而让人白等。
+这个项目暂时停更了，所以我不再接收新功能和技术建议——提了也得等 v1.0 才可能做，反而让人白等。
 
 想自己改的话：直接 fork，Apache-2.0 授权，随你怎么改，不用问我，也不用发 PR（我不会合并）。
 

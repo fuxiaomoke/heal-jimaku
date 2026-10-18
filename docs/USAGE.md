@@ -2,7 +2,7 @@
 
 > **⚠️ 2026 年 10 月：本文档里「免费获取JSON」的部分已经不能用了。** ElevenLabs 给免费转录接口加了人机验证（hCaptcha），每次转录都要先取得一次性令牌；治幕是 PyQt 做的桌面程序，没有浏览器内核，取不到令牌，请求会直接返回 `401 Unauthorized`。
 >
-> 请改用：**「本地 JSON 文件模式」**（先用其他 ASR 工具生成词级时间戳 JSON，再导入处理）、**「ElevenLabs 云端 API 转录」**、**「Soniox 云端转录」**。其余章节不受影响。项目整体情况见 [README](../README.md)。
+> 请改用：**「本地 JSON 文件模式」**（先用其他 ASR 工具生成词级时间戳 JSON，再导入处理）、**「ElevenLabs 云端 API 转录」**、**「Soniox 云端转录」**。想要免费转录的话，可以改用作者的另一个项目 **[mai2srt](https://github.com/fuxiaomoke/mai2srt)**（音频/视频 → 词级时间戳 → SRT，全程免费）。其余章节不受影响。项目整体情况见 [README](../README.md)。
 
 本文档将指导您如何使用 Heal-Jimaku (治幕) 应用程序来优化并导出您需要的字幕文件。
 
