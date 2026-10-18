@@ -1,66 +1,38 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environment
-.env
-.venv
-env/
-venv/
-ENV/
-VENV/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# IDE / Editor specific
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sublime-workspace
-
-# OS generated files
+# ---- OS / 编辑器 ----
 .DS_Store
 Thumbs.db
-*.backup
-/.kiro
+.vscode/
+.idea/
 
-# ===== v1.0 起新增（前端 / 打包 / 本地数据）=====
-# Node / 前端构建产物
-node_modules/
-.pnpm-store/
-.vite/
-dist/
-dist-ssr/
-*.local
+# ---- 密钥与本地配置（模板请提交 .env.example）----
+.env
+.env.*
+!.env.example
 
-# Rust / Tauri
-target/
-src-tauri/target/
-
-# Python 工具链缓存
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.hypothesis/
 
-# 打包与发布产物
+# ---- Node（vite 的缓存在 node_modules/.vite 里，已被覆盖）----
+node_modules/
+dist/
+
+# ---- Rust / Tauri（target/ 同时覆盖 src-tauri/target/）----
+target/
+
+# ---- 打包产物 ----
 build/
 release/
-artifacts/
+.nuitka-cache/
 
-# 本地运行数据（用户配置、数据库、日志）
-*.db
-*.sqlite
-*.sqlite3
+# ---- 运行时数据 ----
 *.log
+*.db
+*.sqlite*
 user_data/
-
-# 环境变量（模板请提交 .env.example）
-.env.*
-!.env.example
